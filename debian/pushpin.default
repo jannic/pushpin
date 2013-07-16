@@ -1,0 +1,13 @@
+# Defaults for pushpin initscript
+# sourced by /etc/init.d/pushpin
+# installed at /etc/default/pushpin by the maintainer scripts
+
+#
+# This is a POSIX shell fragment
+#
+
+# Additional options that are passed to the Daemon.
+DAEMON_OPTS=""
+
+# Set to 'yes' if pushpin should be started automatically.
+RUN=no

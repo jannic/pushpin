@@ -1,0 +1,23 @@
+Source: pushpin
+Section: net
+Priority: extra
+Maintainer: Jan Niehusmann <jan@debian.org>
+Build-Depends: debhelper (>= 8.0.0), libqt4-dev (>= 4.7), libqca2-dev (>= 2.0), libzmq-dev (>= 2.0), qca2-utils, pkg-config, hardening-wrapper, libqjson-dev
+Standards-Version: 3.9.4
+Homepage: https://github.com/fanout/pushpin
+Vcs-Git: git://git.debian.org/users/jan/pushpin.git
+Vcs-Browser: http://git.debian.org/?p=users/jan/pushpin.git;a=summary
+
+Package: pushpin
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, mongrel2-core (>= 1.8.1-devel-20130916), zurl (>= 1.0.0), redis-server, python-zmq, python-redis, python-setproctitle, python-jinja2, python, adduser, python-tnetstring
+Description: HTTP reverse proxy server for streaming and long-polling services
+ Pushpin is an HTTP reverse proxy server that makes it easy to implement
+ streaming and long-polling services. It communicates with backend web
+ applications using regular, short-lived HTTP requests (GRIP protocol). This
+ allows the backend applications to be written in any language and use any
+ webserver.
+ .
+ Additionally, Pushpin does all of this without exposing a proprietary protocol
+ to clients. The HTTP content between the client and your server is whatever
+ you want it to be. This makes it ideal for implementing APIs.

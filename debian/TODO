@@ -1,0 +1,3 @@
+ * Add manual pages for pushpin and pushpin.conf
+ * Move pushpin-proxy, pushpin-handler and m2adapter to /usr/lib?
+

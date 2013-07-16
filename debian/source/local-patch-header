@@ -1,0 +1,6 @@
+This patch contains the differences between the upstream tarball and
+the sources actually used for building the package.
+
+Option single-debian-patch is used as the changes are tracked in git.
+
+
