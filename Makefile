@@ -1,6 +1,7 @@
-prefix = /usr/local
-varprefix = /var/local
-configdir = $(prefix)/etc/pushpin
+INSTALL_ROOT=$(DESTDIR)
+prefix = /usr
+varprefix = /var
+configdir = /etc/pushpin
 bindir = $(prefix)/bin
 libdir = $(prefix)/lib/pushpin
 rundir = $(varprefix)/run/pushpin
