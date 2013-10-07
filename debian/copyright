@@ -36,8 +36,7 @@ License: LGPL-2.1+
  Public License version 2.1 can be found in "/usr/share/common-licenses/LGPL-2.1".
 
 Files: qzmq/*
-Copyright: 2005-2012 Justin Karneges
-           2005 Jeremie Miller
+Copyright: 2012 Justin Karneges
 License: Expat
 
 Files: debian/*
