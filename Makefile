@@ -36,10 +36,10 @@ make-pushpin-proxy: proxy/conf.pri
 	cd proxy && make
 
 m2adapter/conf.pri:
-	cd m2adapter && ./configure
+	cd m2adapter && qt-qconf && ./configure
 
 proxy/conf.pri:
-	cd proxy && ./configure
+	cd proxy && qt-qconf && ./configure
 
 pushpin.inst: pushpin
 	sed -e "s,^default_config_dir =.*,default_config_dir = \"$(configdir)\",g" pushpin > pushpin.inst && chmod 755 pushpin.inst
