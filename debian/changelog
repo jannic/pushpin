@@ -1,3 +1,10 @@
+pushpin (0.0~20130920-1) experimental; urgency=low
+
+  * Merge changes from upstream git. (upstream commit id 9196297)
+  * Closes: #727055
+
+ -- Jan Niehusmann <jan@debian.org>  Sun, 27 Oct 2013 23:16:04 +0100
+
 pushpin (0.0~20130916-1) experimental; urgency=low
 
   * Initial debian package
