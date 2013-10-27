@@ -2,4 +2,7 @@ pushpin for Debian
 ------------------
 
 As there is no release, yet, the source was downloaded from git.
+(See changelog for upstream git commit id.)
 
+The file configure.exe was removed from the archive, as its source
+is not included.
