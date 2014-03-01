@@ -5,6 +5,8 @@ pushpin (0.0~20140301-1) experimental; urgency=low
   * Set standards-version to 3.9.5 (no changes)
   * Build-depend on libqca2-plugin-ossl. This is only needed
     for a test case.
+  * Fix init-script. (start-stop-daemon was not properly detecting
+    an already running instance when start was called twice.)
 
  -- Jan Niehusmann <jan@debian.org>  Sat, 01 Mar 2014 20:43:42 +0100
 
