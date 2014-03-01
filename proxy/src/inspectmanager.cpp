@@ -37,12 +37,14 @@ class InspectManager::Private : public QObject
 public:
 	InspectManager *q;
 	QString req_spec;
+	int timeout;
 	QZmq::Socket *req_sock;
 	QHash<QByteArray, InspectRequest*> reqsById;
 
 	Private(InspectManager *_q) :
 		QObject(_q),
 		q(_q),
+		timeout(-1),
 		req_sock(0)
 	{
 	}
@@ -126,10 +128,20 @@ InspectManager::~InspectManager()
 	delete d;
 }
 
+int InspectManager::timeout() const
+{
+	return d->timeout;
+}
+
 bool InspectManager::setSpec(const QString &spec)
 {
 	d->req_spec = spec;
 	return d->setup();
+}
+
+void InspectManager::setTimeout(int ms)
+{
+	d->timeout = ms;
 }
 
 InspectRequest *InspectManager::createRequest()
