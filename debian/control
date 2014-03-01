@@ -3,7 +3,7 @@ Section: net
 Priority: extra
 Maintainer: Jan Niehusmann <jan@debian.org>
 Build-Depends: debhelper (>= 8.0.0), libqt4-dev (>= 4.7), libqca2-dev (>= 2.0), libzmq3-dev (>= 2.0), qca2-utils, pkg-config, hardening-wrapper, libqjson-dev, qconf
-Standards-Version: 3.9.4
+Standards-Version: 3.9.5
 Homepage: https://github.com/fanout/pushpin
 Vcs-Git: git://git.debian.org/users/jan/pushpin.git
 Vcs-Browser: http://git.debian.org/?p=users/jan/pushpin.git;a=summary
