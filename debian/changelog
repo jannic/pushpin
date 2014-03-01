@@ -3,6 +3,8 @@ pushpin (0.0~20140301-1) experimental; urgency=low
   * Merge changes from upstream git. (upstream commit id 62b974e)
   * Build against libzmq3 (closes: Bug#740417)
   * Set standards-version to 3.9.5 (no changes)
+  * Build-depend on libqca2-plugin-ossl. This is only needed
+    for a test case.
 
  -- Jan Niehusmann <jan@debian.org>  Sat, 01 Mar 2014 20:43:42 +0100
 
