@@ -42,6 +42,10 @@ public:
 		QString inspectSpec;
 		QString retryInSpec;
 		QString acceptOutSpec;
+		QString wsControlInSpec;
+		QString wsControlOutSpec;
+		QString statsSpec;
+		QString commandSpec;
 		int maxWorkers;
 		int inspectTimeout;
 		QString routesFile;

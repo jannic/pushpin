@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2013 Fanout, Inc.
+ * Copyright (C) 2014 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -17,27 +17,28 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef PROXYSESSION_H
-#define PROXYSESSION_H
+#ifndef WSPROXYSESSION_H
+#define WSPROXYSESSION_H
 
 #include <QObject>
+#include "zwebsocket.h"
 
-class InspectData;
-class AcceptData;
 class ZhttpManager;
+class WsControlManager;
+class StatsManager;
 class DomainMap;
 class XffRule;
-class RequestSession;
 
-class ProxySession : public QObject
+class WsProxySession : public QObject
 {
 	Q_OBJECT
 
 public:
-	ProxySession(ZhttpManager *zhttpManager, DomainMap *domainMap, QObject *parent = 0);
-	~ProxySession();
+	WsProxySession(ZhttpManager *zhttpManager, DomainMap *domainMap, StatsManager *stats = 0, WsControlManager *wsControlManager = 0, QObject *parent = 0);
+	~WsProxySession();
 
 	QByteArray routeId() const;
+	ZWebSocket::Rid rid() const;
 
 	void setDefaultSigKey(const QByteArray &iss, const QByteArray &key);
 	void setDefaultUpstreamKey(const QByteArray &key);
@@ -45,18 +46,11 @@ public:
 	void setXffRules(const XffRule &untrusted, const XffRule &trusted);
 	void setOrigHeadersNeedMark(const QList<QByteArray> &names);
 
-	void setInspectData(const InspectData &idata);
-
 	// takes ownership
-	void add(RequestSession *rs);
-
-	void cannotAccept();
+	void start(ZWebSocket *sock);
 
 signals:
-	void addNotAllowed(); // no more sharing, for whatever reason
 	void finishedByPassthrough();
-	void finishedForAccept(const AcceptData &adata);
-	void requestSessionDestroyed(RequestSession *rs, bool accept);
 
 private:
 	class Private;

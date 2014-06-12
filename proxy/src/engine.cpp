@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2013 Fanout, Inc.
+ * Copyright (C) 2012-2014 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -30,13 +30,24 @@
 #include "acceptdata.h"
 #include "zhttpmanager.h"
 #include "zhttprequest.h"
+#include "zwebsocket.h"
 #include "domainmap.h"
 #include "inspectmanager.h"
 #include "inspectchecker.h"
+#include "wscontrolmanager.h"
 #include "requestsession.h"
 #include "proxysession.h"
+#include "wsproxysession.h"
+#include "statsmanager.h"
+#include "zrpcmanager.h"
+#include "zrpcrequest.h"
 
 #define DEFAULT_HWM 1000
+
+static QByteArray ridToString(const QPair<QByteArray, QByteArray> &rid)
+{
+	return rid.first + ':' + rid.second;
+}
 
 class Engine::Private : public QObject
 {
@@ -57,26 +68,44 @@ public:
 		}
 	};
 
+	class WsProxyItem
+	{
+	public:
+		WsProxySession *ps;
+
+		WsProxyItem() :
+			ps(0)
+		{
+		}
+	};
+
 	Engine *q;
 	Configuration config;
 	ZhttpManager *zhttp;
 	InspectManager *inspect;
+	WsControlManager *wsControl;
 	DomainMap *domainMap;
 	InspectChecker *inspectChecker;
+	StatsManager *stats;
+	ZrpcManager *rpc;
 	QZmq::Socket *handler_retry_in_sock;
 	QZmq::Socket *handler_accept_out_sock;
 	QZmq::Valve *handler_retry_in_valve;
 	QSet<RequestSession*> requestSessions;
 	QHash<QByteArray, ProxyItem*> proxyItemsByKey;
 	QHash<ProxySession*, ProxyItem*> proxyItemsBySession;
+	QHash<WsProxySession*, WsProxyItem*> wsProxyItemsBySession;
 
 	Private(Engine *_q) :
 		QObject(_q),
 		q(_q),
 		zhttp(0),
 		inspect(0),
+		wsControl(0),
 		domainMap(0),
 		inspectChecker(0),
+		stats(0),
+		rpc(0),
 		handler_retry_in_sock(0),
 		handler_accept_out_sock(0),
 		handler_retry_in_valve(0)
@@ -96,6 +125,16 @@ public:
 		proxyItemsBySession.clear();
 		proxyItemsByKey.clear();
 		requestSessions.clear();
+
+		QHashIterator<WsProxySession*, WsProxyItem*> wit(wsProxyItemsBySession);
+		while(wit.hasNext())
+		{
+			wit.next();
+			delete wit.key();
+			delete wit.value();
+		}
+
+		wsProxyItemsBySession.clear();
 	}
 
 	bool start(const Configuration &_config)
@@ -106,6 +145,7 @@ public:
 
 		zhttp = new ZhttpManager(this);
 		connect(zhttp, SIGNAL(requestReady()), SLOT(zhttp_requestReady()));
+		connect(zhttp, SIGNAL(socketReady()), SLOT(zhttp_socketReady()));
 
 		zhttp->setInstanceId(config.clientId);
 
@@ -164,6 +204,48 @@ public:
 		if(handler_retry_in_valve)
 			handler_retry_in_valve->open();
 
+		if(!config.wsControlInSpec.isEmpty() && !config.wsControlOutSpec.isEmpty())
+		{
+			wsControl = new WsControlManager(this);
+
+			if(!wsControl->setInSpec(config.wsControlInSpec))
+			{
+				log_error("unable to bind to handler_ws_control_in_spec: %s", qPrintable(config.wsControlInSpec));
+				return false;
+			}
+
+			if(!wsControl->setOutSpec(config.wsControlOutSpec))
+			{
+				log_error("unable to bind to handler_ws_control_out_spec: %s", qPrintable(config.wsControlOutSpec));
+				return false;
+			}
+		}
+
+		if(!config.statsSpec.isEmpty())
+		{
+			stats = new StatsManager(this);
+
+			stats->setInstanceId(config.clientId);
+
+			if(!stats->setSpec(config.statsSpec))
+			{
+				log_error("unable to bind to stats_spec: %s", qPrintable(config.statsSpec));
+				return false;
+			}
+		}
+
+		if(!config.commandSpec.isEmpty())
+		{
+			rpc = new ZrpcManager(this);
+			connect(rpc, SIGNAL(requestReady()), SLOT(rpc_requestReady()));
+
+			if(!rpc->setInSpec(config.commandSpec))
+			{
+				log_error("unable to bind to command_spec: %s", qPrintable(config.commandSpec));
+				return false;
+			}
+		}
+
 		return true;
 	}
 
@@ -172,7 +254,7 @@ public:
 		domainMap->reload();
 	}
 
-	void doProxy(RequestSession *rs, const InspectData *idata = 0)
+	void doProxy(RequestSession *rs, const InspectData *idata = 0, bool isRetry = false)
 	{
 		bool sharable = (idata && !idata->sharingKey.isEmpty() && rs->haveCompleteRequestBody());
 
@@ -194,7 +276,7 @@ public:
 			connect(ps, SIGNAL(addNotAllowed()), SLOT(ps_addNotAllowed()));
 			connect(ps, SIGNAL(finishedByPassthrough()), SLOT(ps_finishedByPassthrough()));
 			connect(ps, SIGNAL(finishedForAccept(const AcceptData &)), SLOT(ps_finishedForAccept(const AcceptData &)));
-			connect(ps, SIGNAL(requestSessionDestroyed(RequestSession *)), SLOT(ps_requestSessionDestroyed(RequestSession *)));
+			connect(ps, SIGNAL(requestSessionDestroyed(RequestSession *, bool)), SLOT(ps_requestSessionDestroyed(RequestSession *, bool)));
 
 			ps->setDefaultSigKey(config.sigIss, config.sigKey);
 			ps->setDefaultUpstreamKey(config.upstreamKey);
@@ -223,6 +305,12 @@ public:
 		rs->disconnect(this);
 
 		ps->add(rs);
+
+		if(stats)
+		{
+			stats->addConnection(ridToString(rs->rid()), ps->routeId(), StatsManager::Http, rs->peerAddress(), rs->isHttps(), isRetry);
+			stats->addActivity(ps->routeId());
+		}
 	}
 
 	void sendAccept(const AcceptData &adata)
@@ -259,6 +347,7 @@ public:
 			p.response = adata.response;
 		}
 
+		p.route = adata.route;
 		p.channelPrefix = adata.channelPrefix;
 
 		QList<QByteArray> msg;
@@ -266,12 +355,17 @@ public:
 		handler_accept_out_sock->write(msg);
 	}
 
+	bool canTake()
+	{
+		return (config.maxWorkers == -1 || (requestSessions.count() + wsProxyItemsBySession.count()) < config.maxWorkers);
+	}
+
 	void tryTakeRequest()
 	{
-		if(config.maxWorkers != -1 && requestSessions.count() >= config.maxWorkers)
+		if(!canTake())
 			return;
 
-		ZhttpRequest *req = zhttp->takeNext();
+		ZhttpRequest *req = zhttp->takeNextRequest();
 		if(!req)
 			return;
 
@@ -288,15 +382,54 @@ public:
 		rs->start(req);
 	}
 
-private slots:
-	void m2_requestReady()
+	void tryTakeSocket()
 	{
-		tryTakeRequest();
+		if(!canTake())
+			return;
+
+		ZWebSocket *sock = zhttp->takeNextSocket();
+		if(!sock)
+			return;
+
+		log_debug("creating wsproxysession for id=%s", sock->rid().second.data());
+
+		WsProxySession *ps = new WsProxySession(zhttp, domainMap, stats, wsControl, this);
+		connect(ps, SIGNAL(finishedByPassthrough()), SLOT(wsps_finishedByPassthrough()));
+
+		ps->setDefaultSigKey(config.sigIss, config.sigKey);
+		ps->setDefaultUpstreamKey(config.upstreamKey);
+		ps->setUseXForwardedProtocol(config.useXForwardedProtocol);
+		ps->setXffRules(config.xffUntrustedRule, config.xffTrustedRule);
+		ps->setOrigHeadersNeedMark(config.origHeadersNeedMark);
+
+		WsProxyItem *i = new WsProxyItem;
+		i->ps = ps;
+		wsProxyItemsBySession.insert(i->ps, i);
+
+		ps->start(sock);
+
+		if(stats)
+		{
+			stats->addConnection(ridToString(sock->rid()), ps->routeId(), StatsManager::WebSocket, sock->peerAddress(), sock->requestUri().scheme() == "wss", false);
+			stats->addActivity(ps->routeId());
+		}
 	}
 
-	void zhttp_requestReady()
+	void tryTakeNext()
 	{
 		tryTakeRequest();
+		tryTakeSocket();
+	}
+
+private slots:
+	void zhttp_requestReady()
+	{
+		tryTakeNext();
+	}
+
+	void zhttp_socketReady()
+	{
+		tryTakeNext();
 	}
 
 	void rs_inspected(const InspectData &idata)
@@ -322,10 +455,13 @@ private slots:
 	{
 		RequestSession *rs = (RequestSession *)sender();
 
+		if(stats)
+			stats->removeConnection(ridToString(rs->rid()), false);
+
 		requestSessions.remove(rs);
 		delete rs;
 
-		tryTakeRequest();
+		tryTakeNext();
 	}
 
 	void rs_finishedForAccept(const AcceptData &adata)
@@ -338,12 +474,22 @@ private slots:
 			return;
 		}
 
+		if(stats)
+		{
+			// add connection so that it becomes lingerable
+			stats->addConnection(ridToString(rs->rid()), QByteArray(), StatsManager::Http, rs->peerAddress(), rs->isHttps(), false);
+			stats->addActivity(QByteArray());
+
+			// immediately remove since we're accepting
+			stats->removeConnection(ridToString(rs->rid()), true);
+		}
+
 		requestSessions.remove(rs);
 		delete rs;
 
 		sendAccept(adata);
 
-		tryTakeRequest();
+		tryTakeNext();
 	}
 
 	void ps_addNotAllowed()
@@ -374,7 +520,7 @@ private slots:
 		delete i;
 		delete ps;
 
-		tryTakeRequest();
+		tryTakeNext();
 	}
 
 	void ps_finishedForAccept(const AcceptData &adata)
@@ -402,14 +548,34 @@ private slots:
 
 		delete ps;
 
-		tryTakeRequest();
+		tryTakeNext();
 	}
 
-	void ps_requestSessionDestroyed(RequestSession *rs)
+	void ps_requestSessionDestroyed(RequestSession *rs, bool accept)
 	{
 		requestSessions.remove(rs);
 
-		tryTakeRequest();
+		if(stats)
+			stats->removeConnection(ridToString(rs->rid()), accept);
+
+		tryTakeNext();
+	}
+
+	void wsps_finishedByPassthrough()
+	{
+		WsProxySession *ps = (WsProxySession *)sender();
+
+		WsProxyItem *i = wsProxyItemsBySession.value(ps);
+		assert(i);
+
+		if(stats)
+			stats->removeConnection(ridToString(ps->rid()), false);
+
+		wsProxyItemsBySession.remove(i->ps);
+		delete i;
+		delete ps;
+
+		tryTakeNext();
 	}
 
 	void handler_retry_in_readyRead(const QList<QByteArray> &message)
@@ -460,20 +626,82 @@ private slots:
 			ss.outCredits = req.outCredits;
 			ss.userData = req.userData;
 
-			ZhttpRequest *zhttpRequest = zhttp->createFromState(ss);
+			ZhttpRequest *zhttpRequest = zhttp->createRequestFromState(ss);
 
 			RequestSession *rs = new RequestSession(inspect, inspectChecker, this);
 			rs->startRetry(zhttpRequest, req.autoCrossOrigin, req.jsonpCallback);
 
 			requestSessions += rs;
 
-			doProxy(rs, p.haveInspectInfo ? &idata : 0);
+			// note: if the routing table was changed, there's a chance the request
+			//   might get a different route id this time around. this could confuse
+			//   stats processors tracking route+connection mappings.
+
+			doProxy(rs, p.haveInspectInfo ? &idata : 0, true);
 		}
 	}
 
 	void handler_accept_out_messagesWritten(int count)
 	{
 		Q_UNUSED(count);
+	}
+
+	void rpc_requestReady()
+	{
+		ZrpcRequest *req = rpc->takeNext();
+		if(req->method() == "conncheck")
+		{
+			if(!stats)
+			{
+				req->respondError("service-unavailable");
+				delete req;
+				return;
+			}
+
+			QVariantHash args = req->args();
+			if(!args.contains("ids") || args["ids"].type() != QVariant::List)
+			{
+				req->respondError("bad-format");
+				delete req;
+				return;
+			}
+
+			QVariantList vids = args["ids"].toList();
+
+			bool ok = true;
+			QList<QByteArray> ids;
+			foreach(const QVariant &vid, vids)
+			{
+				if(vid.type() != QVariant::ByteArray)
+				{
+					ok = false;
+					break;
+				}
+
+				ids += vid.toByteArray();
+			}
+			if(!ok)
+			{
+				req->respondError("bad-format");
+				delete req;
+				return;
+			}
+
+			QVariantList out;
+			foreach(const QByteArray &id, ids)
+			{
+				if(stats->checkConnection(id))
+					out += id;
+			}
+
+			req->respond(out);
+		}
+		else
+		{
+			req->respondError("method-not-found");
+		}
+
+		delete req;
 	}
 };
 

@@ -29,17 +29,25 @@
 class DomainMap
 {
 public:
+	enum Protocol
+	{
+		Http,
+		WebSocket
+	};
+
 	class Target
 	{
 	public:
-		QString host;
-		int port;
+		QString connectHost;
+		int connectPort;
 		bool ssl; // use https
 		bool trusted; // bypass zurl access policies
 		bool insecure; // ignore server certificate validity
+		QString host; // override input host
+		QString subChannel; // force subscription for websocket test
 
 		Target() :
-			port(-1),
+			connectPort(-1),
 			ssl(false),
 			trusted(false),
 			insecure(false)
@@ -50,10 +58,13 @@ public:
 	class Entry
 	{
 	public:
+		QByteArray id;
 		QByteArray sigIss;
 		QByteArray sigKey;
 		QByteArray prefix;
 		bool origHeaders;
+		QString asHost;
+		int pathRemove;
 		QList<Target> targets;
 
 		bool isNull() const
@@ -62,7 +73,8 @@ public:
 		}
 
 		Entry() :
-			origHeaders(false)
+			origHeaders(false),
+			pathRemove(0)
 		{
 		}
 	};
@@ -70,11 +82,11 @@ public:
 	DomainMap(const QString &fileName);
 	~DomainMap();
 
-	// shouldn't really ever need to call this, but sometimes the
+	// shouldn't really ever need to call this, but it's here in case the
 	//   underlying file watching doesn't work
 	void reload();
 
-	Entry entry(const QString &domain, const QByteArray &path, bool ssl) const;
+	Entry entry(Protocol proto, bool ssl, const QString &domain, const QByteArray &path) const;
 
 private:
 	class Private;
