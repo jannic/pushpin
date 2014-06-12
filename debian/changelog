@@ -1,3 +1,9 @@
+pushpin (0.0~20140430-1) experimental; urgency=low
+
+  * Merge changes from upstream git. (upstream commit id 6a1518f)
+
+ -- Jan Niehusmann <jan@debian.org>  Thu, 12 Jun 2014 21:58:39 +0200
+
 pushpin (0.0~20140301-1) experimental; urgency=low
 
   * Merge changes from upstream git. (upstream commit id 62b974e)
