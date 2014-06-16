@@ -4,7 +4,7 @@ libdir=
 
 [runner]
 # services to start
-services=mongrel2,m2adapter,zurl,pushpin-proxy,pushpin-handler
+services=mongrel2,m2adapter,pushpin-proxy,pushpin-handler
 
 # plain HTTP port that mongrel2 should listen on
 http_port=7999
@@ -38,13 +38,13 @@ m2a_in_stream_specs=ipc:///tmp/pushpin-m2zhttp-out-stream,ipc:///tmp/pushpin-m2z
 m2a_out_specs=ipc:///tmp/pushpin-m2zhttp-in,ipc:///tmp/pushpin-m2zws-in
 
 # list of connect PUSH for sending zurl HTTP/WS requests
-zurl_out_specs=ipc:///tmp/pushpin-zurl-in
+zurl_out_specs=ipc:///var/run/zurl/zurl-in
 
 # list of connect ROUTER for continuing zurl HTTP/WS requests
-zurl_out_stream_specs=ipc:///tmp/pushpin-zurl-in-stream
+zurl_out_stream_specs=ipc:///var/run/zurl/zurl-in-stream
 
 # list of connect SUB for receiving zurl HTTP/WS responses
-zurl_in_specs=ipc:///tmp/pushpin-zurl-out
+zurl_in_specs=ipc:///var/run/zurl/zurl-out
 
 # bind DEALER for requesting inspection info (internal, used with handler)
 handler_inspect_spec=ipc:///tmp/pushpin-inspect
