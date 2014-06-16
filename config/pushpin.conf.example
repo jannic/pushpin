@@ -29,13 +29,13 @@ zurl_bin=zurl
 
 [proxy]
 # list of connect PULL for receiving mongrel2 HTTP/WS requests
-m2a_in_specs=ipc:///tmp/pushpin-m2zhttp-out,ipc:///tmp/pushpin-m2zws-out
+m2a_in_specs=ipc:///var/run/pushpin/pushpin-m2zhttp-out,ipc:///var/run/pushpin/pushpin-m2zws-out
 
 # list of connect DEALER for continuing mongrel2 HTTP/WS requests
-m2a_in_stream_specs=ipc:///tmp/pushpin-m2zhttp-out-stream,ipc:///tmp/pushpin-m2zws-out-stream
+m2a_in_stream_specs=ipc:///var/run/pushpin/pushpin-m2zhttp-out-stream,ipc:///var/run/pushpin/pushpin-m2zws-out-stream
 
 # list of connect PUB for sending mongrel2 HTTP/WS responses
-m2a_out_specs=ipc:///tmp/pushpin-m2zhttp-in,ipc:///tmp/pushpin-m2zws-in
+m2a_out_specs=ipc:///var/run/pushpin/pushpin-m2zhttp-in,ipc:///var/run/pushpin/pushpin-m2zws-in
 
 # list of connect PUSH for sending zurl HTTP/WS requests
 zurl_out_specs=ipc:///var/run/zurl/zurl-in
@@ -47,25 +47,25 @@ zurl_out_stream_specs=ipc:///var/run/zurl/zurl-in-stream
 zurl_in_specs=ipc:///var/run/zurl/zurl-out
 
 # bind DEALER for requesting inspection info (internal, used with handler)
-handler_inspect_spec=ipc:///tmp/pushpin-inspect
+handler_inspect_spec=ipc:///var/run/pushpin/pushpin-inspect
 
 # bind PULL for receiving retry requests (internal, used with handler)
-handler_retry_in_spec=ipc:///tmp/pushpin-retry
+handler_retry_in_spec=ipc:///var/run/pushpin/pushpin-retry
 
 # bind PUSH for passing off requests (internal, used with handler)
-handler_accept_out_spec=ipc:///tmp/pushpin-accept
+handler_accept_out_spec=ipc:///var/run/pushpin/pushpin-accept
 
 # bind PULL for reading handler WS control messages
-handler_ws_control_in_spec=ipc:///tmp/pushpin-ws-control-in
+handler_ws_control_in_spec=ipc:///var/run/pushpin/pushpin-ws-control-in
 
 # bind PUSH for writing handler WS control messages
-handler_ws_control_out_spec=ipc:///tmp/pushpin-ws-control-out
+handler_ws_control_out_spec=ipc:///var/run/pushpin/pushpin-ws-control-out
 
 # bind PUB for sending stats
-stats_spec=ipc:///tmp/pushpin-proxy-stats
+stats_spec=ipc:///var/run/pushpin/pushpin-proxy-stats
 
 # bind REP for responding to commands
-command_spec=ipc:///tmp/pushpin-proxy-command
+command_spec=ipc:///var/run/pushpin/pushpin-proxy-command
 
 # routes config file (path relative to location of this file)
 routesfile=routes
@@ -94,31 +94,31 @@ upstream_key=
 
 [handler]
 # connect REP for responding with inspection info (internal, used with proxy)
-proxy_inspect_spec=ipc:///tmp/pushpin-inspect
+proxy_inspect_spec=ipc:///var/run/pushpin/pushpin-inspect
 
 # connect PUSH for sending HTTP requests (internal, used with proxy)
-proxy_retry_out_spec=ipc:///tmp/pushpin-retry
+proxy_retry_out_spec=ipc:///var/run/pushpin/pushpin-retry
 
 # connect PULL for receiving HTTP requests (internal, used with proxy)
-proxy_accept_in_spec=ipc:///tmp/pushpin-accept
+proxy_accept_in_spec=ipc:///var/run/pushpin/pushpin-accept
 
 # bind PULL for reading proxy WS control messages
-proxy_ws_control_in_spec=ipc:///tmp/pushpin-ws-control-out
+proxy_ws_control_in_spec=ipc:///var/run/pushpin/pushpin-ws-control-out
 
 # bind PUSH for writing proxy WS control messages
-proxy_ws_control_out_spec=ipc:///tmp/pushpin-ws-control-in
+proxy_ws_control_out_spec=ipc:///var/run/pushpin/pushpin-ws-control-in
 
 # connect SUB for receiving stats from proxy
-proxy_stats_spec=ipc:///tmp/pushpin-proxy-stats
+proxy_stats_spec=ipc:///var/run/pushpin/pushpin-proxy-stats
 
 # connect DEALER for sending commands to proxy
-proxy_command_spec=ipc:///tmp/pushpin-proxy-command
+proxy_command_spec=ipc:///var/run/pushpin/pushpin-proxy-command
 
 # list of connect DEALER for continuing mongrel2 HTTP/WS requests
-m2a_in_stream_specs=ipc:///tmp/pushpin-m2zhttp-out-stream,ipc:///tmp/pushpin-m2zws-out-stream
+m2a_in_stream_specs=ipc:///var/run/pushpin/pushpin-m2zhttp-out-stream,ipc:///var/run/pushpin/pushpin-m2zws-out-stream
 
 # list of connect PUB for sending mongrel2 HTTP/WS responses
-m2a_out_specs=ipc:///tmp/pushpin-m2zhttp-in,ipc:///tmp/pushpin-m2zws-in
+m2a_out_specs=ipc:///var/run/pushpin/pushpin-m2zhttp-in,ipc:///var/run/pushpin/pushpin-m2zws-in
 
 # redis server to use for storing state
 redis_host=127.0.0.1
@@ -133,7 +133,7 @@ push_in_http_addr=127.0.0.1
 push_in_http_port=5561
 
 # bind PUB for sending stats (metrics, subscription info, etc)
-stats_spec=ipc:///tmp/pushpin-stats
+stats_spec=ipc:///var/run/pushpin/pushpin-stats
 
 # bind REP for responding to commands
-command_spec=ipc:///tmp/pushpin-command
+command_spec=ipc:///var/run/pushpin/pushpin-command

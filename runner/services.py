@@ -50,10 +50,10 @@ def write_m2adapter_config(configpath, rundir, ports):
 	instances = list()
 	for port in ports:
 		i = dict()
-		i["send_spec"] = "ipc:///tmp/pushpin-m2-out-" + str(port)
-		i["recv_spec"] = "ipc:///tmp/pushpin-m2-in-" + str(port)
+		i["send_spec"] = "ipc:///var/run/pushpin/pushpin-m2-out-" + str(port)
+		i["recv_spec"] = "ipc:///var/run/pushpin/pushpin-m2-in-" + str(port)
 		i["send_ident"] = "pushpin-m2-" + str(port)
-		i["control_spec"] = "ipc:///tmp/pushpin-m2-control-" + str(port)
+		i["control_spec"] = "ipc:///var/run/pushpin/pushpin-m2-control-" + str(port)
 		instances.append(i)
 
 	vars = dict()
