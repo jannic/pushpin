@@ -11,3 +11,8 @@ OBJECTS_DIR = $$OUT_PWD/_obj
 
 include($$OUT_PWD/../../../conf.pri)
 include(libpushpin-proxy.pri)
+
+QMAKE_CXXFLAGS += $(Q_CXXFLAGS)
+QMAKE_CFLAGS_DEBUG += $(Q_CFLAGS)
+QMAKE_CFLAGS_RELEASE += $(Q_CFLAGS)
+QMAKE_LFLAGS += $(Q_LDFLAGS)

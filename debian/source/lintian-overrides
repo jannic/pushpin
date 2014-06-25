@@ -1,7 +1,0 @@
-# pushpin uses qconf to generate its makefile, and
-# qconf doesn't honor the flags exported by dpkg-buildflags.
-#
-# Therefore, for now, ignore the lintian warning. In the
-# long term, this should be fixed within qconf.
-# (see e.g. https://lists.debian.org/debian-lint-maint/2013/06/msg00024.html)
-pushpin source: build-depends-on-obsolete-package build-depends: hardening-wrapper => use dpkg-buildflags instead
