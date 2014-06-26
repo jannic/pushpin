@@ -2,8 +2,9 @@ pushpin (0.0~20140620-1) unstable; urgency=low
 
   * Merge changes from upstream git. (upstream commit id 897ed1b)
   * Upload to unstable
+  * Add lintian-override for dependency on hardening-wrapper
 
- -- Jan Niehusmann <jan@debian.org>  Wed, 25 Jun 2014 15:33:43 +0200
+ -- Jan Niehusmann <jan@debian.org>  Thu, 26 Jun 2014 11:30:43 +0200
 
 pushpin (0.0~20140430-2) experimental; urgency=low
 
