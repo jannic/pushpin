@@ -1,3 +1,9 @@
+pushpin (0.0~20140620-2) UNRELEASED; urgency=low
+
+  * Update Vcs URL
+
+ -- Jan Niehusmann <jan@debian.org>  Wed, 09 Jul 2014 14:41:15 +0200
+
 pushpin (0.0~20140620-1) unstable; urgency=low
 
   * Merge changes from upstream git. (upstream commit id 897ed1b)
