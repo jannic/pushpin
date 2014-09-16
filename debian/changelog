@@ -1,3 +1,9 @@
+pushpin (1.0.0-2) unstable; urgency=low
+
+  * Remove dependencies on redis-server, python-redis
+
+ -- Jan Niehusmann <jan@debian.org>  Tue, 16 Sep 2014 23:51:11 +0200
+
 pushpin (1.0.0-1) unstable; urgency=low
 
   * New upstream version 1.0.0
