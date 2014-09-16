@@ -1,17 +1,13 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: pushpin
-Source: As there is no released tarball, the source was retrieved from the git repo at
-        https://github.com/fanout/pushpin/
-	and from the git submodules at
-        https://github.com/fanout/common
-        https://github.com/jkarneges/qzmq
+Source: http://packages.fanout.io/source/pushpin-1.0.0.tar.bz2
 
 Files: *
-Copyright: 2012-2013 Fanout, Inc.
+Copyright: 2012-2014 Fanout, Inc.
 License: AGPL-3+
 
 Files: common/*
-Copyright: 2012-2013 Fanout, Inc.
+Copyright: 2012-2014 Fanout, Inc.
 License: GPL-3+
 
 Files: common/processquit.*
