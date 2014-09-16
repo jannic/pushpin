@@ -1,9 +1,6 @@
 Pushpin
--------
-Date: June 20th, 2014
-
-Author: Justin Karneges <justin@fanout.io>
-
+=======
+Author: Justin Karneges <justin@fanout.io>  
 Mailing List: http://lists.fanout.io/listinfo.cgi/fanout-users-fanout.io
 
 Read:
