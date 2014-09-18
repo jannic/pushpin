@@ -1,3 +1,9 @@
+pushpin (1.0.0-3) unstable; urgency=low
+
+  * Fix typo in debian/rules, which prevented proper use of hardening flags.
+
+ -- Jan Niehusmann <jan@debian.org>  Thu, 18 Sep 2014 20:24:58 +0200
+
 pushpin (1.0.0-2) unstable; urgency=low
 
   * Remove dependencies on redis-server, python-redis
