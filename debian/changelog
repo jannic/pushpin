@@ -1,3 +1,9 @@
+pushpin (1.0.0-4) UNRELEASED; urgency=low
+
+  * Set standards-version to 3.9.6 (no changes)
+
+ -- Jan Niehusmann <jan@debian.org>  Fri, 19 Sep 2014 11:00:51 +0200
+
 pushpin (1.0.0-3) unstable; urgency=low
 
   * Fix typo in debian/rules, which prevented proper use of hardening flags.
