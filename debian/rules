@@ -18,5 +18,4 @@ export Q_CPPFLAGS Q_CFLAGS Q_CXXFLAGS Q_LDFLAGS
 
 override_dh_auto_install:
 	dh_auto_install
-	rmdir debian/pushpin/var/run/pushpin
-	rmdir debian/pushpin/var/run
+	mkdir -p debian/pushpin/var/log/pushpin
