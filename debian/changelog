@@ -1,8 +1,9 @@
-pushpin (1.0.0-4) UNRELEASED; urgency=low
+pushpin (1.1.0-1) unstable; urgency=low
 
   * Set standards-version to 3.9.6 (no changes)
+  * Merge upstream version 1.1.0
 
- -- Jan Niehusmann <jan@debian.org>  Fri, 19 Sep 2014 11:00:51 +0200
+ -- Jan Niehusmann <jan@debian.org>  Wed, 11 Mar 2015 22:13:02 +0100
 
 pushpin (1.0.0-3) unstable; urgency=low
 
