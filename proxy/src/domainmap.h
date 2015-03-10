@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2013 Fanout, Inc.
+ * Copyright (C) 2012-2015 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -20,26 +20,82 @@
 #ifndef DOMAINMAP_H
 #define DOMAINMAP_H
 
+#include <QObject>
 #include <QPair>
 #include <QString>
 
 // this class offers fast access to the routes file. the table is maintained
 //   by a background thread so that file access doesn't cause blocking.
 
-class DomainMap
+class DomainMap : public QObject
 {
+	Q_OBJECT
+
 public:
+	class JsonpConfig
+	{
+	public:
+		enum Mode
+		{
+			Basic,
+			Extended
+		};
+
+		Mode mode;
+		QByteArray callbackParam;
+		QByteArray bodyParam;
+		QByteArray defaultCallback;
+
+		JsonpConfig() :
+			mode(Extended)
+		{
+		}
+	};
+
 	enum Protocol
 	{
 		Http,
 		WebSocket
 	};
 
+	class ZhttpRoute
+	{
+	public:
+		QString baseSpec;
+		bool req;
+		int ipcFileMode;
+
+		ZhttpRoute() :
+			req(false),
+			ipcFileMode(-1)
+		{
+		}
+
+		bool isNull() const
+		{
+			return baseSpec.isEmpty();
+		}
+
+		bool operator==(const ZhttpRoute &other) const
+		{
+			// only compare spec
+			return (baseSpec == other.baseSpec);
+		}
+	};
+
 	class Target
 	{
 	public:
+		enum Type
+		{
+			Default,
+			Custom
+		};
+
+		Type type;
 		QString connectHost;
 		int connectPort;
+		ZhttpRoute zhttpRoute;
 		bool ssl; // use https
 		bool trusted; // bypass zurl access policies
 		bool insecure; // ignore server certificate validity
@@ -48,6 +104,7 @@ public:
 		bool overHttp; // use websocket-over-http protocol
 
 		Target() :
+			type(Default),
 			connectPort(-1),
 			ssl(false),
 			trusted(false),
@@ -67,6 +124,11 @@ public:
 		bool origHeaders;
 		QString asHost;
 		int pathRemove;
+		bool autoCrossOrigin;
+		JsonpConfig jsonpConfig;
+		bool session;
+		QByteArray sockJsPath;
+		QByteArray sockJsAsPath;
 		QList<Target> targets;
 
 		bool isNull() const
@@ -76,12 +138,14 @@ public:
 
 		Entry() :
 			origHeaders(false),
-			pathRemove(0)
+			pathRemove(0),
+			autoCrossOrigin(false),
+			session(false)
 		{
 		}
 	};
 
-	DomainMap(const QString &fileName);
+	DomainMap(const QString &fileName, QObject *parent = 0);
 	~DomainMap();
 
 	// shouldn't really ever need to call this, but it's here in case the
@@ -90,8 +154,14 @@ public:
 
 	Entry entry(Protocol proto, bool ssl, const QString &domain, const QByteArray &path) const;
 
+	QList<ZhttpRoute> zhttpRoutes() const;
+
+signals:
+	void changed();
+
 private:
 	class Private;
+	friend class Private;
 	Private *d;
 
 	class Thread;

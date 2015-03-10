@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2013 Fanout, Inc.
+ * Copyright (C) 2015 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -17,25 +17,26 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef INSPECTREQUESTPACKET_H
-#define INSPECTREQUESTPACKET_H
+#ifndef ZUTIL_H
+#define ZUTIL_H
 
-#include <QVariant>
-#include <QUrl>
-#include "httpheaders.h"
+class QString;
+class QStringList;
 
-class InspectRequestPacket
-{
-public:
-	QByteArray id;
-	QString method;
-	QUrl uri;
-	HttpHeaders headers;
-	bool https;
+namespace QZmq {
 
-	InspectRequestPacket();
+class Socket;
 
-	QVariant toVariant() const;
-};
+}
+
+namespace ZUtil {
+
+bool bindSpec(QZmq::Socket *sock, const QString &spec, int ipcFileMode, QString *errorMessage = 0);
+
+bool setupSocket(QZmq::Socket *sock, const QStringList &specs, bool bind, int ipcFileMode, QString *errorMessage = 0);
+
+bool setupSocket(QZmq::Socket *sock, const QString &spec, bool bind, int ipcFileMode, QString *errorMessage = 0);
+
+}
 
 #endif

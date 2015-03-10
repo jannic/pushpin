@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2013 Fanout, Inc.
+ * Copyright (C) 2014 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -17,23 +17,37 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef INSPECTRESPONSEPACKET_H
-#define INSPECTRESPONSEPACKET_H
+#ifndef ZROUTES_H
+#define ZROUTES_H
 
-#include <QVariant>
-#include "httpheaders.h"
+#include <QObject>
+#include "zhttpmanager.h"
+#include "domainmap.h"
 
-class InspectResponsePacket
+class ZRoutes : public QObject
 {
+	Q_OBJECT
+
 public:
-	QByteArray id;
-	bool noProxy;
-	QByteArray sharingKey;
-	QVariant userData;
+	ZRoutes(QObject *parent = 0);
+	~ZRoutes();
 
-	InspectResponsePacket();
+	void setInstanceId(const QByteArray &id);
+	void setDefaultOutSpecs(const QStringList &specs);
+	void setDefaultOutStreamSpecs(const QStringList &specs);
+	void setDefaultInSpecs(const QStringList &specs);
 
-	bool fromVariant(const QVariant &in);
+	void setup(const QList<DomainMap::ZhttpRoute> &routes);
+
+	ZhttpManager *defaultManager();
+	ZhttpManager *managerForRoute(const DomainMap::ZhttpRoute &route);
+
+	void addRef(ZhttpManager *zhttpManager);
+	void removeRef(ZhttpManager *zhttpManager);
+
+private:
+	class Private;
+	Private *d;
 };
 
 #endif

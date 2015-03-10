@@ -36,7 +36,7 @@
 #include "log.h"
 #include "layertracker.h"
 
-#define VERSION "1.0.0"
+#define VERSION "1.1.0"
 
 #define DEFAULT_HWM 1000
 #define EXPIRE_INTERVAL 1000
@@ -556,6 +556,7 @@ public:
 		{
 			zhttp_in_sock = new QZmq::Socket(QZmq::Socket::Sub, this);
 			zhttp_in_sock->setHwm(DEFAULT_HWM);
+			zhttp_in_sock->setShutdownWaitTime(0);
 			zhttp_in_sock->subscribe(zhttpInstanceId + ' ');
 			if(zhttp_connect)
 			{
@@ -600,6 +601,7 @@ public:
 			}
 
 			zhttp_out_stream_sock = new QZmq::Socket(QZmq::Socket::Router, this);
+			zhttp_out_stream_sock->setShutdownWaitTime(0);
 			zhttp_out_stream_sock->setHwm(DEFAULT_HWM);
 			if(zhttp_connect)
 			{

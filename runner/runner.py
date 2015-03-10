@@ -9,7 +9,7 @@ def run(exedir, config_file, verbose):
 
 	configdir = config.get("runner", "configdir")
 	if not os.path.isabs(configdir):
-		configdir = os.path.join(os.path.dirname(config_file), configdir)
+		configdir = os.path.abspath(configdir)
 
 	service_names = config.get("runner", "services").split(",")
 
@@ -22,13 +22,17 @@ def run(exedir, config_file, verbose):
 				continue
 			https_ports.append(int(p))
 
-	rundir = config.get("runner", "rundir")
+	if config.has_option("global", "rundir"):
+		rundir = config.get("global", "rundir")
+	else:
+		print 'warning: rundir in [runner] section is deprecated. put in [global]'
+		rundir = config.get("runner", "rundir")
 	if not os.path.isabs(rundir):
-		rundir = os.path.join(os.path.dirname(config_file), rundir)
+		rundir = os.path.abspath(rundir)
 
 	logdir = config.get("runner", "logdir")
 	if not os.path.isabs(logdir):
-		logdir = os.path.join(os.path.dirname(config_file), logdir)
+		logdir = os.path.abspath(logdir)
 
 	m2abin = "m2adapter"
 	path = os.path.normpath(os.path.join(exedir, "m2adapter/m2adapter"))
@@ -44,6 +48,16 @@ def run(exedir, config_file, verbose):
 	path = os.path.normpath(os.path.join(exedir, "handler/pushpin-handler"))
 	if os.path.isfile(path):
 		handlerbin = path
+
+	# make run/log dirs if needed. don't fail if dirs already exist
+	try:
+		os.makedirs(rundir)
+	except:
+		pass
+	try:
+		os.makedirs(logdir)
+	except:
+		pass
 
 	service_objs = list()
 
@@ -69,10 +83,11 @@ def run(exedir, config_file, verbose):
 		service_objs.append(services.M2AdapterService(m2abin, os.path.join(rundir, "m2adapter.conf"), verbose, rundir, logdir))
 
 	if "zurl" in service_names:
+		services.write_zurl_config(os.path.join(configdir, "zurl.conf.template"), rundir)
 		zurl_bin = "zurl"
 		if config.has_option("runner", "zurl_bin"):
 			zurl_bin = config.get("runner", "zurl_bin")
-		service_objs.append(services.ZurlService(zurl_bin, os.path.join(configdir, "zurl.conf"), verbose, rundir, logdir))
+		service_objs.append(services.ZurlService(zurl_bin, os.path.join(rundir, "zurl.conf"), verbose, rundir, logdir))
 
 	if "pushpin-proxy" in service_names:
 		service_objs.append(services.PushpinProxyService(proxybin, config_file, verbose, rundir, logdir))

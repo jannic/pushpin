@@ -31,7 +31,7 @@
 #include "xffrule.h"
 #include "engine.h"
 
-#define VERSION "1.0.0"
+#define VERSION "1.1.0"
 
 static void trimlist(QStringList *list)
 {
@@ -78,6 +78,7 @@ class Settings
 private:
 	QSettings *main;
 	QSettings *include;
+	QString rundir;
 
 public:
 	Settings(const QString &fileName) :
@@ -95,6 +96,14 @@ public:
 
 			include = new QSettings(includeFile, QSettings::IniFormat);
 		}
+
+		rundir = valueRaw("global/rundir").toString();
+
+		if(rundir.isEmpty())
+		{
+			// fallback to runner section (deprecated)
+			rundir = valueRaw("runner/rundir").toString();
+		}
 	}
 
 	~Settings()
@@ -103,7 +112,7 @@ public:
 		delete main;
 	}
 
-	QVariant value(const QString &key, const QVariant &defaultValue = QVariant()) const
+	QVariant valueRaw(const QString &key, const QVariant &defaultValue = QVariant()) const
 	{
 		if(include)
 		{
@@ -114,6 +123,29 @@ public:
 		}
 		else
 			return main->value(key, defaultValue);
+	}
+
+	QVariant value(const QString &key, const QVariant &defaultValue = QVariant()) const
+	{
+		QVariant v = valueRaw(key, defaultValue);
+		if(v.isValid())
+		{
+			if(v.type() == QVariant::String)
+			{
+				QString s = v.toString();
+				v = s.replace("{rundir}", rundir);
+			}
+			else if(v.type() == QVariant::StringList)
+			{
+				QStringList oldList = v.toStringList();
+				QStringList newList;
+				foreach(QString s, oldList)
+					newList += s.replace("{rundir}", rundir);
+				v = newList;
+			}
+		}
+
+		return v;
 	}
 };
 
@@ -223,12 +255,14 @@ public:
 		QStringList zurl_in_specs = settings.value("proxy/zurl_in_specs").toStringList();
 		trimlist(&zurl_in_specs);
 		QString handler_inspect_spec = settings.value("proxy/handler_inspect_spec").toString();
+		QString handler_accept_spec = settings.value("proxy/handler_accept_spec").toString();
 		QString handler_retry_in_spec = settings.value("proxy/handler_retry_in_spec").toString();
-		QString handler_accept_out_spec = settings.value("proxy/handler_accept_out_spec").toString();
 		QString handler_ws_control_in_spec = settings.value("proxy/handler_ws_control_in_spec").toString();
 		QString handler_ws_control_out_spec = settings.value("proxy/handler_ws_control_out_spec").toString();
 		QString stats_spec = settings.value("proxy/stats_spec").toString();
 		QString command_spec = settings.value("proxy/command_spec").toString();
+		bool ok;
+		int ipcFileMode = settings.value("proxy/ipc_file_mode", -1).toString().toInt(&ok, 8);
 		int maxWorkers = settings.value("proxy/max_open_requests", -1).toInt();
 		QString routesFile = settings.value("proxy/routesfile").toString();
 		bool autoCrossOrigin = settings.value("proxy/auto_cross_origin").toBool();
@@ -239,6 +273,7 @@ public:
 		trimlist(&origHeadersNeedMarkStr);
 		QByteArray sigKey = parse_key(settings.value("proxy/sig_key").toString());
 		QByteArray upstreamKey = parse_key(settings.value("proxy/upstream_key").toString());
+		QString sockJsUrl = settings.value("proxy/sockjs_url").toString();
 
 		QList<QByteArray> origHeadersNeedMark;
 		foreach(const QString &s, origHeadersNeedMarkStr)
@@ -265,12 +300,13 @@ public:
 		config.clientOutStreamSpecs = zurl_out_stream_specs;
 		config.clientInSpecs = zurl_in_specs;
 		config.inspectSpec = handler_inspect_spec;
+		config.acceptSpec = handler_accept_spec;
 		config.retryInSpec = handler_retry_in_spec;
-		config.acceptOutSpec = handler_accept_out_spec;
 		config.wsControlInSpec = handler_ws_control_in_spec;
 		config.wsControlOutSpec = handler_ws_control_out_spec;
 		config.statsSpec = stats_spec;
 		config.commandSpec = command_spec;
+		config.ipcFileMode = ipcFileMode;
 		config.maxWorkers = maxWorkers;
 		config.routesFile = routesFile;
 		config.autoCrossOrigin = autoCrossOrigin;
@@ -281,6 +317,7 @@ public:
 		config.sigIss = "pushpin";
 		config.sigKey = sigKey;
 		config.upstreamKey = upstreamKey;
+		config.sockJsUrl = sockJsUrl;
 
 		engine = new Engine(this);
 		if(!engine->start(config))

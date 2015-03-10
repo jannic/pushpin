@@ -22,13 +22,13 @@
 #include <assert.h>
 #include <QTimer>
 #include <QPointer>
-#include <QUuid>
 #include "log.h"
 #include "bufferlist.h"
 #include "packet/httprequestdata.h"
 #include "packet/httpresponsedata.h"
 #include "zhttprequest.h"
 #include "zhttpmanager.h"
+#include "uuidutil.h"
 
 #define BUFFER_SIZE 200000
 
@@ -178,7 +178,8 @@ public:
 	{
 		state = Connecting;
 
-		cid = QUuid::createUuid().toString().toLatin1();
+		if(cid.isEmpty())
+			cid = UuidUtil::createUuid();
 
 		// don't forward certain headers
 		requestData.headers.removeAll("Upgrade");
@@ -256,6 +257,7 @@ private:
 
 		headers += HttpHeader("Accept", "application/websocket-events");
 		headers += HttpHeader("Connection-Id", cid);
+		headers += HttpHeader("Content-Type", "application/websocket-events");
 
 		foreach(const HttpHeader &h, meta)
 			headers += HttpHeader("Meta-" + h.first, h.second);
@@ -292,10 +294,15 @@ private:
 
 			if(state == Closing)
 			{
-				QByteArray buf(2, 0);
-				buf[0] = (closeCode >> 8) & 0xff;
-				buf[1] = closeCode & 0xff;
-				events += WsEvent("CLOSE", buf);
+				if(closeCode != -1)
+				{
+					QByteArray buf(2, 0);
+					buf[0] = (closeCode >> 8) & 0xff;
+					buf[1] = closeCode & 0xff;
+					events += WsEvent("CLOSE", buf);
+				}
+				else
+					events += WsEvent("CLOSE");
 
 				reqClose = true;
 			}
@@ -565,6 +572,11 @@ WebSocketOverHttp::WebSocketOverHttp(ZhttpManager *zhttpManager, QObject *parent
 WebSocketOverHttp::~WebSocketOverHttp()
 {
 	delete d;
+}
+
+void WebSocketOverHttp::setConnectionId(const QByteArray &id)
+{
+	d->cid = id;
 }
 
 QHostAddress WebSocketOverHttp::peerAddress() const

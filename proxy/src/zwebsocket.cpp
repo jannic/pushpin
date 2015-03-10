@@ -22,11 +22,11 @@
 #include <assert.h>
 #include <QTimer>
 #include <QPointer>
-#include <QUuid>
 #include "zhttprequestpacket.h"
 #include "zhttpresponsepacket.h"
 #include "log.h"
 #include "zhttpmanager.h"
+#include "uuidutil.h"
 
 #define IDEAL_CREDITS 200000
 #define SESSION_EXPIRE 60000
@@ -367,7 +367,7 @@ public:
 			inContentType = (int)ftype;
 		}
 
-		inFrames += Frame(ftype, data, more);
+		inFrames += Frame(ftype, !data.isNull() ? data : QByteArray(""), more);
 		inSize += data.size();
 
 		if(!more)
@@ -488,6 +488,9 @@ public:
 			return;
 		}
 
+		if(!packet.from.isEmpty())
+			toAddress = packet.from;
+
 		if(packet.seq != inSeq)
 		{
 			log_warning("zws client: error id=%s received message out of sequence, canceling", packet.id.data());
@@ -501,13 +504,8 @@ public:
 			return;
 		}
 
-		if(!packet.from.isEmpty())
-		{
-			toAddress = packet.from;
-
-			if(!keepAliveTimer->isActive())
-				startKeepAlive();
-		}
+		if(!toAddress.isEmpty() && !keepAliveTimer->isActive())
+			startKeepAlive();
 
 		++inSeq;
 
@@ -647,7 +645,7 @@ public:
 		QByteArray contentType;
 		if(frame.type == Frame::Binary || frame.type == Frame::Text || frame.type == Frame::Continuation)
 		{
-			Frame::Type ftype;
+			Frame::Type ftype = (Frame::Type)-1;
 			if(frame.type == Frame::Binary || frame.type == Frame::Text)
 			{
 				ftype = frame.type;
@@ -658,10 +656,13 @@ public:
 				ftype = (Frame::Type)outContentType;
 			}
 
-			if(ftype == Frame::Binary)
-				contentType = "binary";
-			else // Text
-				contentType = "text";
+			if(ftype != (Frame::Type)-1)
+			{
+				if(ftype == Frame::Binary)
+					contentType = "binary";
+				else // Text
+					contentType = "text";
+			}
 		}
 
 		if(server)
@@ -751,6 +752,11 @@ public:
 		if(state != Idle)
 		{
 			state = Idle;
+
+			// can't send cancel in client mode without address
+			if(!server && toAddress.isEmpty())
+				return;
+
 			writeCancel();
 		}
 	}
@@ -765,7 +771,7 @@ public:
 	void tryRespondCancel(const ZhttpResponsePacket &packet)
 	{
 		// if this was not an error packet, send cancel
-		if(packet.type != ZhttpResponsePacket::Error && packet.type != ZhttpResponsePacket::Cancel)
+		if(packet.type != ZhttpResponsePacket::Error && packet.type != ZhttpResponsePacket::Cancel && !toAddress.isEmpty())
 			writeCancel();
 	}
 
@@ -1047,7 +1053,7 @@ void ZWebSocket::close(int code)
 void ZWebSocket::setupClient(ZhttpManager *manager)
 {
 	d->manager = manager;
-	d->rid = Rid(manager->instanceId(), QUuid::createUuid().toString().toLatin1());
+	d->rid = Rid(manager->instanceId(), UuidUtil::createUuid());
 	d->manager->link(this);
 }
 

@@ -20,7 +20,6 @@
 #include "wscontrolsession.h"
 
 #include <assert.h>
-#include <QUuid>
 #include <QTimer>
 #include "wscontrolmanager.h"
 
@@ -146,10 +145,10 @@ void WsControlSession::sendGripMessage(const QByteArray &message)
 	d->sendGripMessage(message);
 }
 
-void WsControlSession::setup(WsControlManager *manager)
+void WsControlSession::setup(WsControlManager *manager, const QByteArray &cid)
 {
 	d->manager = manager;
-	d->cid = QUuid::createUuid().toString().toLatin1();
+	d->cid = cid;
 	d->manager->link(this, d->cid);
 }
 

@@ -43,8 +43,10 @@ public:
 		ErrorConnectTimeout,
 		ErrorTls,
 		ErrorLengthRequired,
+		ErrorDisconnected,
 		ErrorTimeout,
-		ErrorUnavailable
+		ErrorUnavailable,
+		ErrorRequestTooLarge
 	};
 
 	// pair of sender + request id
@@ -58,6 +60,7 @@ public:
 		QString requestMethod;
 		QUrl requestUri;
 		HttpHeaders requestHeaders;
+		QByteArray requestBody;
 		int inSeq;
 		int outSeq;
 		int outCredits;
@@ -92,12 +95,14 @@ public:
 
 	// for server requests only
 	void pause();
+	void resume();
 	ServerState serverState() const;
 
 	int bytesAvailable() const;
 	bool isFinished() const;
 	bool isInputFinished() const;
 	bool isOutputFinished() const;
+	bool isErrored() const;
 	ErrorCondition errorCondition() const;
 
 	QString requestMethod() const;
@@ -125,7 +130,7 @@ private:
 
 	friend class ZhttpManager;
 	ZhttpRequest(QObject *parent = 0);
-	void setupClient(ZhttpManager *manager);
+	void setupClient(ZhttpManager *manager, bool req);
 	bool setupServer(ZhttpManager *manager, const ZhttpRequestPacket &packet);
 	void setupServer(ZhttpManager *manager, const ServerState &state);
 	void startServer();

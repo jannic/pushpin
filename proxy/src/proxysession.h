@@ -21,11 +21,12 @@
 #define PROXYSESSION_H
 
 #include <QObject>
+#include "domainmap.h"
 
 class InspectData;
 class AcceptData;
-class ZhttpManager;
-class DomainMap;
+class ZrpcManager;
+class ZRoutes;
 class XffRule;
 class RequestSession;
 
@@ -34,11 +35,10 @@ class ProxySession : public QObject
 	Q_OBJECT
 
 public:
-	ProxySession(ZhttpManager *zhttpManager, DomainMap *domainMap, QObject *parent = 0);
+	ProxySession(ZRoutes *zroutes, ZrpcManager *acceptManager, QObject *parent = 0);
 	~ProxySession();
 
-	QByteArray routeId() const;
-
+	void setRoute(const DomainMap::Entry &route);
 	void setDefaultSigKey(const QByteArray &iss, const QByteArray &key);
 	void setDefaultUpstreamKey(const QByteArray &key);
 	void setUseXForwardedProtocol(bool enabled);
@@ -54,8 +54,7 @@ public:
 
 signals:
 	void addNotAllowed(); // no more sharing, for whatever reason
-	void finishedByPassthrough();
-	void finishedForAccept(const AcceptData &adata);
+	void finished();
 	void requestSessionDestroyed(RequestSession *rs, bool accept);
 
 private:

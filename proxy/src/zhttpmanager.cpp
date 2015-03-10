@@ -23,16 +23,19 @@
 #include <QStringList>
 #include <QHash>
 #include <QPointer>
+#include <QFile>
 #include "qzmqsocket.h"
 #include "qzmqvalve.h"
 #include "tnetstring.h"
 #include "zhttprequestpacket.h"
 #include "zhttpresponsepacket.h"
 #include "log.h"
+#include "zutil.h"
 
 #define OUT_HWM 100
 #define IN_HWM 100
 #define DEFAULT_HWM 1000
+#define SHUTDOWN_WAIT_TIME 1000
 
 class ZhttpManager::Private : public QObject
 {
@@ -50,17 +53,21 @@ public:
 	QStringList client_out_specs;
 	QStringList client_out_stream_specs;
 	QStringList client_in_specs;
+	QStringList client_req_specs;
 	QStringList server_in_specs;
 	QStringList server_in_stream_specs;
 	QStringList server_out_specs;
 	QZmq::Socket *client_out_sock;
 	QZmq::Socket *client_out_stream_sock;
 	QZmq::Socket *client_in_sock;
+	QZmq::Socket *client_req_sock;
 	QZmq::Socket *server_in_sock;
 	QZmq::Socket *server_in_stream_sock;
 	QZmq::Socket *server_out_sock;
 	QZmq::Valve *server_in_valve;
 	QByteArray instanceId;
+	int ipcFileMode;
+	bool doBind;
 	QHash<ZhttpRequest::Rid, ZhttpRequest*> clientReqsByRid;
 	QHash<ZhttpRequest::Rid, ZhttpRequest*> serverReqsByRid;
 	QList<ZhttpRequest*> serverPendingReqs;
@@ -74,30 +81,40 @@ public:
 		client_out_sock(0),
 		client_out_stream_sock(0),
 		client_in_sock(0),
+		client_req_sock(0),
 		server_in_sock(0),
 		server_in_stream_sock(0),
 		server_out_sock(0),
-		server_in_valve(0)
+		server_in_valve(0),
+		ipcFileMode(-1),
+		doBind(false)
 	{
 	}
 
 	bool setupClientOut()
 	{
+		delete client_req_sock;
 		delete client_out_sock;
 
 		client_out_sock = new QZmq::Socket(QZmq::Socket::Push, this);
 		connect(client_out_sock, SIGNAL(messagesWritten(int)), SLOT(client_out_messagesWritten(int)));
 
 		client_out_sock->setHwm(OUT_HWM);
+		client_out_sock->setShutdownWaitTime(SHUTDOWN_WAIT_TIME);
 
-		foreach(const QString &spec, client_out_specs)
-			client_out_sock->connectToAddress(spec);
+		QString errorMessage;
+		if(!ZUtil::setupSocket(client_out_sock, client_out_specs, doBind, ipcFileMode, &errorMessage))
+		{
+			log_error("%s", qPrintable(errorMessage));
+			return false;
+		}
 
 		return true;
 	}
 
 	bool setupClientOutStream()
 	{
+		delete client_req_sock;
 		delete client_out_stream_sock;
 
 		client_out_stream_sock = new QZmq::Socket(QZmq::Socket::Router, this);
@@ -105,26 +122,57 @@ public:
 
 		client_out_stream_sock->setWriteQueueEnabled(false);
 		client_out_stream_sock->setHwm(DEFAULT_HWM);
+		client_out_stream_sock->setShutdownWaitTime(SHUTDOWN_WAIT_TIME);
 
-		foreach(const QString &spec, client_out_stream_specs)
-			client_out_stream_sock->connectToAddress(spec);
+		QString errorMessage;
+		if(!ZUtil::setupSocket(client_out_stream_sock, client_out_stream_specs, doBind, ipcFileMode, &errorMessage))
+		{
+			log_error("%s", qPrintable(errorMessage));
+			return false;
+		}
 
 		return true;
 	}
 
 	bool setupClientIn()
 	{
+		delete client_req_sock;
 		delete client_in_sock;
 
 		client_in_sock = new QZmq::Socket(QZmq::Socket::Sub, this);
 		connect(client_in_sock, SIGNAL(readyRead()), SLOT(client_in_readyRead()));
 
 		client_in_sock->setHwm(DEFAULT_HWM);
+		client_in_sock->setShutdownWaitTime(SHUTDOWN_WAIT_TIME);
+		client_in_sock->subscribe(instanceId + ' ');
 
-		foreach(const QString &spec, client_in_specs)
+		QString errorMessage;
+		if(!ZUtil::setupSocket(client_in_sock, client_in_specs, doBind, ipcFileMode, &errorMessage))
 		{
-			client_in_sock->subscribe(instanceId + ' ');
-			client_in_sock->connectToAddress(spec);
+			log_error("%s", qPrintable(errorMessage));
+			return false;
+		}
+
+		return true;
+	}
+
+	bool setupClientReq()
+	{
+		delete client_out_sock;
+		delete client_out_stream_sock;
+		delete client_in_sock;
+
+		client_req_sock = new QZmq::Socket(QZmq::Socket::Dealer, this);
+		connect(client_req_sock, SIGNAL(readyRead()), SLOT(client_req_readyRead()));
+
+		client_req_sock->setHwm(OUT_HWM);
+		client_req_sock->setShutdownWaitTime(SHUTDOWN_WAIT_TIME);
+
+		QString errorMessage;
+		if(!ZUtil::setupSocket(client_req_sock, client_req_specs, doBind, ipcFileMode, &errorMessage))
+		{
+			log_error("%s", qPrintable(errorMessage));
+			return false;
 		}
 
 		return true;
@@ -137,9 +185,14 @@ public:
 		server_in_sock = new QZmq::Socket(QZmq::Socket::Pull, this);
 
 		server_in_sock->setHwm(IN_HWM);
+		server_in_sock->setShutdownWaitTime(SHUTDOWN_WAIT_TIME);
 
-		foreach(const QString &spec, server_in_specs)
-			server_in_sock->connectToAddress(spec);
+		QString errorMessage;
+		if(!ZUtil::setupSocket(server_in_sock, server_in_specs, doBind, ipcFileMode, &errorMessage))
+		{
+			log_error("%s", qPrintable(errorMessage));
+			return false;
+		}
 
 		server_in_valve = new QZmq::Valve(server_in_sock, this);
 		connect(server_in_valve, SIGNAL(readyRead(const QList<QByteArray> &)), SLOT(server_in_readyRead(const QList<QByteArray> &)));
@@ -153,14 +206,19 @@ public:
 	{
 		delete server_in_stream_sock;
 
-		server_in_stream_sock = new QZmq::Socket(QZmq::Socket::Dealer, this);
+		server_in_stream_sock = new QZmq::Socket(QZmq::Socket::Router, this);
 		connect(server_in_stream_sock, SIGNAL(readyRead()), SLOT(server_in_stream_readyRead()));
 
 		server_in_stream_sock->setIdentity(instanceId);
 		server_in_stream_sock->setHwm(DEFAULT_HWM);
+		server_in_stream_sock->setShutdownWaitTime(SHUTDOWN_WAIT_TIME);
 
-		foreach(const QString &spec, server_in_stream_specs)
-			server_in_stream_sock->connectToAddress(spec);
+		QString errorMessage;
+		if(!ZUtil::setupSocket(server_in_stream_sock, server_in_stream_specs, doBind, ipcFileMode, &errorMessage))
+		{
+			log_error("%s", qPrintable(errorMessage));
+			return false;
+		}
 
 		return true;
 	}
@@ -174,9 +232,14 @@ public:
 
 		server_out_sock->setWriteQueueEnabled(false);
 		server_out_sock->setHwm(DEFAULT_HWM);
+		server_out_sock->setShutdownWaitTime(SHUTDOWN_WAIT_TIME);
 
-		foreach(const QString &spec, server_out_specs)
-			server_out_sock->connectToAddress(spec);
+		QString errorMessage;
+		if(!ZUtil::setupSocket(server_out_sock, server_out_specs, doBind, ipcFileMode, &errorMessage))
+		{
+			log_error("%s", qPrintable(errorMessage));
+			return false;
+		}
 
 		return true;
 	}
@@ -198,14 +261,23 @@ public:
 
 	void write(SessionType type, const ZhttpRequestPacket &packet)
 	{
-		assert(client_out_sock);
+		assert(client_out_sock || client_req_sock);
 		const char *logprefix = logPrefixForType(type);
 
-		QByteArray buf = QByteArray("T") + TnetString::fromVariant(packet.toVariant());
+		QVariant vpacket = packet.toVariant();
+		QByteArray buf = QByteArray("T") + TnetString::fromVariant(vpacket);
 
-		log_debug("%s client: OUT %s", logprefix, buf.data());
+		if(client_out_sock)
+		{
+			if(log_outputLevel() >= LOG_LEVEL_DEBUG)
+				log_debug("%s client: OUT %s", logprefix, qPrintable(TnetString::variantToString(vpacket, -1)));
 
-		client_out_sock->write(QList<QByteArray>() << buf);
+			client_out_sock->write(QList<QByteArray>() << buf);
+		}
+		else
+		{
+			client_req_sock->write(QList<QByteArray>() << QByteArray() << buf);
+		}
 	}
 
 	void write(SessionType type, const ZhttpRequestPacket &packet, const QByteArray &instanceAddress)
@@ -213,9 +285,11 @@ public:
 		assert(client_out_stream_sock);
 		const char *logprefix = logPrefixForType(type);
 
-		QByteArray buf = QByteArray("T") + TnetString::fromVariant(packet.toVariant());
+		QVariant vpacket = packet.toVariant();
+		QByteArray buf = QByteArray("T") + TnetString::fromVariant(vpacket);
 
-		log_debug("%s client: OUT %s %s", logprefix, instanceAddress.data(), buf.data());
+		if(log_outputLevel() >= LOG_LEVEL_DEBUG)
+			log_debug("%s client: OUT %s %s", logprefix, instanceAddress.data(), qPrintable(TnetString::variantToString(vpacket, -1)));
 
 		QList<QByteArray> msg;
 		msg += instanceAddress;
@@ -229,9 +303,11 @@ public:
 		assert(server_out_sock);
 		const char *logprefix = logPrefixForType(type);
 
-		QByteArray buf = instanceAddress + " T" + TnetString::fromVariant(packet.toVariant());
+		QVariant vpacket = packet.toVariant();
+		QByteArray buf = instanceAddress + " T" + TnetString::fromVariant(vpacket);
 
-		log_debug("%s server: OUT %s", logprefix, buf.data());
+		if(log_outputLevel() >= LOG_LEVEL_DEBUG)
+			log_debug("%s server: OUT %s %s", logprefix, instanceAddress.data(), qPrintable(TnetString::variantToString(vpacket, -1)));
 
 		server_out_sock->write(QList<QByteArray>() << buf);
 	}
@@ -270,8 +346,6 @@ public slots:
 				continue;
 			}
 
-			log_debug("zhttp/zws client: IN %s", msg[0].data());
-
 			int at = msg[0].indexOf(' ');
 			if(at == -1)
 			{
@@ -293,6 +367,9 @@ public slots:
 				log_warning("zhttp/zws client: received message with invalid format (tnetstring parse failed), skipping");
 				continue;
 			}
+
+			if(log_outputLevel() >= LOG_LEVEL_DEBUG)
+				log_debug("zhttp/zws client: IN %s %s", receiver.data(), qPrintable(TnetString::variantToString(data, -1)));
 
 			ZhttpResponsePacket p;
 			if(!p.fromVariant(data))
@@ -345,8 +422,6 @@ public slots:
 			return;
 		}
 
-		log_debug("zhttp/zws server: IN %s", msg[0].data());
-
 		if(msg[0].length() < 1 || msg[0][0] != 'T')
 		{
 			log_warning("zhttp/zws server: received message with invalid format (missing type), skipping");
@@ -359,6 +434,9 @@ public slots:
 			log_warning("zhttp/zws server: received message with invalid format (tnetstring parse failed), skipping");
 			return;
 		}
+
+		if(log_outputLevel() >= LOG_LEVEL_DEBUG)
+			log_debug("zhttp/zws server: IN %s", qPrintable(TnetString::variantToString(data, -1)));
 
 		ZhttpRequestPacket p;
 		if(!p.fromVariant(data))
@@ -429,6 +507,59 @@ public slots:
 		}
 	}
 
+	void client_req_readyRead()
+	{
+		QPointer<QObject> self = this;
+
+		while(client_req_sock->canRead())
+		{
+			QList<QByteArray> msg = client_req_sock->read();
+			if(msg.count() != 2)
+			{
+				log_warning("zhttp/zws client req: received message with parts != 2, skipping");
+				continue;
+			}
+
+			QByteArray dataRaw = msg[1];
+			if(dataRaw.length() < 1 || dataRaw[0] != 'T')
+			{
+				log_warning("zhttp/zws client req: received message with invalid format (missing type), skipping");
+				continue;
+			}
+
+			QVariant data = TnetString::toVariant(dataRaw.mid(1));
+			if(data.isNull())
+			{
+				log_warning("zhttp/zws client req: received message with invalid format (tnetstring parse failed), skipping");
+				continue;
+			}
+
+			if(log_outputLevel() >= LOG_LEVEL_DEBUG)
+				log_debug("zhttp/zws client req: IN %s", qPrintable(TnetString::variantToString(data, -1)));
+
+			ZhttpResponsePacket p;
+			if(!p.fromVariant(data))
+			{
+				log_warning("zhttp/zws client req: received message with invalid format (parse failed), skipping");
+				continue;
+			}
+
+			ZhttpRequest *req = clientReqsByRid.value(ZhttpRequest::Rid(instanceId, p.id));
+			if(req)
+			{
+				req->handle(p);
+				if(!self)
+					return;
+
+				continue;
+			}
+
+			log_debug("zhttp/zws client req: received message for unknown request id");
+
+			// NOTE: we don't respond with a cancel message in req mode
+		}
+	}
+
 	void server_in_stream_readyRead()
 	{
 		QPointer<QObject> self = this;
@@ -436,26 +567,27 @@ public slots:
 		while(server_in_stream_sock->canRead())
 		{
 			QList<QByteArray> msg = server_in_stream_sock->read();
-			if(msg.count() != 2)
+			if(msg.count() != 3)
 			{
-				log_warning("zhttp/zws server: received message with parts != 2, skipping");
+				log_warning("zhttp/zws server: received message with parts != 3, skipping");
 				continue;
 			}
 
-			log_debug("zhttp/zws server: IN stream %s", msg[1].data());
-
-			if(msg[1].length() < 1 || msg[1][0] != 'T')
+			if(msg[2].length() < 1 || msg[2][0] != 'T')
 			{
 				log_warning("zhttp/zws server: received message with invalid format (missing type), skipping");
 				continue;
 			}
 
-			QVariant data = TnetString::toVariant(msg[1].mid(1));
+			QVariant data = TnetString::toVariant(msg[2].mid(1));
 			if(data.isNull())
 			{
 				log_warning("zhttp/zws server: received message with invalid format (tnetstring parse failed), skipping");
 				continue;
 			}
+
+			if(log_outputLevel() >= LOG_LEVEL_DEBUG)
+				log_debug("zhttp/zws server: IN stream %s", qPrintable(TnetString::variantToString(data, -1)));
 
 			ZhttpRequestPacket p;
 			if(!p.fromVariant(data))
@@ -517,6 +649,21 @@ ZhttpManager::~ZhttpManager()
 	delete d;
 }
 
+int ZhttpManager::connectionCount() const
+{
+	int total = 0;
+	total += d->clientReqsByRid.count();
+	total += d->serverReqsByRid.count();
+	total += d->clientSocksByRid.count();
+	total += d->serverSocksByRid.count();
+	return total;
+}
+
+bool ZhttpManager::clientUsesReq() const
+{
+	return (!d->client_out_sock && d->client_req_sock);
+}
+
 QByteArray ZhttpManager::instanceId() const
 {
 	return d->instanceId;
@@ -525,6 +672,16 @@ QByteArray ZhttpManager::instanceId() const
 void ZhttpManager::setInstanceId(const QByteArray &id)
 {
 	d->instanceId = id;
+}
+
+void ZhttpManager::setIpcFileMode(int mode)
+{
+	d->ipcFileMode = mode;
+}
+
+void ZhttpManager::setBind(bool enable)
+{
+	d->doBind = enable;
 }
 
 bool ZhttpManager::setClientOutSpecs(const QStringList &specs)
@@ -543,6 +700,12 @@ bool ZhttpManager::setClientInSpecs(const QStringList &specs)
 {
 	d->client_in_specs = specs;
 	return d->setupClientIn();
+}
+
+bool ZhttpManager::setClientReqSpecs(const QStringList &specs)
+{
+	d->client_req_specs = specs;
+	return d->setupClientReq();
 }
 
 bool ZhttpManager::setServerInSpecs(const QStringList &specs)
@@ -566,7 +729,7 @@ bool ZhttpManager::setServerOutSpecs(const QStringList &specs)
 ZhttpRequest *ZhttpManager::createRequest()
 {
 	ZhttpRequest *req = new ZhttpRequest;
-	req->setupClient(this);
+	req->setupClient(this, d->client_req_sock ? true : false);
 	return req;
 }
 
@@ -595,6 +758,9 @@ ZhttpRequest *ZhttpManager::takeNextRequest()
 
 ZWebSocket *ZhttpManager::createSocket()
 {
+	// websockets not allowed in req mode
+	assert(!d->client_req_sock);
+
 	ZWebSocket *sock = new ZWebSocket;
 	sock->setupClient(this);
 	return sock;
@@ -664,9 +830,12 @@ void ZhttpManager::unlink(ZWebSocket *sock)
 
 bool ZhttpManager::canWriteImmediately() const
 {
-	assert(d->client_out_sock);
+	assert(d->client_out_sock || d->client_req_sock);
 
-	return d->client_out_sock->canWriteImmediately();
+	if(d->client_out_sock)
+		return d->client_out_sock->canWriteImmediately();
+	else
+		return d->client_req_sock->canWriteImmediately();
 }
 
 void ZhttpManager::writeHttp(const ZhttpRequestPacket &packet)
