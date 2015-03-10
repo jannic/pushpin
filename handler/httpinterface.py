@@ -21,8 +21,10 @@ import BaseHTTPServer
 g_server = None
 
 class Server(BaseHTTPServer.HTTPServer):
-	handler_func = None
-	context = None
+	def __init__(self, server_address, RequestHandlerClass):
+		BaseHTTPServer.HTTPServer.__init__(self, server_address, RequestHandlerClass)
+		self.handler_func = None
+		self.context = None
 
 class RequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
 	def send_reply(self, code, status, body):

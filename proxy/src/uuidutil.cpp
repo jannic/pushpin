@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2013 Fanout, Inc.
+ * Copyright (C) 2014 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -17,35 +17,18 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "inspectrequestpacket.h"
+#include "uuidutil.h"
 
-#include "tnetstring.h"
+#include <QUuid>
 
-InspectRequestPacket::InspectRequestPacket() :
-	https(false)
+namespace UuidUtil {
+
+QByteArray createUuid()
 {
+	QByteArray out = QUuid::createUuid().toString().toLatin1();
+	if(out[0] == '{' && out[out.length() - 1] == '}')
+		out = out.mid(1, out.length() - 2);
+	return out;
 }
 
-QVariant InspectRequestPacket::toVariant() const
-{
-	QVariantHash obj;
-	obj["id"] = id;
-	obj["method"] = method.toLatin1();
-	obj["uri"] = uri.toEncoded();
-
-	QVariantList vheaders;
-	foreach(const HttpHeader &h, headers)
-	{
-		QVariantList vheader;
-		vheader += h.first;
-		vheader += h.second;
-		vheaders += QVariant(vheader);
-	}
-
-	obj["headers"] = vheaders;
-
-	if(https)
-		obj["https"] = true;
-
-	return obj;
 }

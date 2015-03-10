@@ -51,27 +51,40 @@ class CallError(Exception):
 		return "condition=%s, message=%s" % (self.condition, self.message)
 
 class RpcClient(object):
-	def __init__(self, req_sock_specs):
+	def __init__(self, req_sock_specs, bind=False, context=None, ipc_file_mode=None):
+		if context:
+			self.context = context
+		else:
+			self.context = zmq_context
 		self.specs = req_sock_specs
+		self.use_bind = bind
 		self.sock = None
+		self.ipc_file_mode = ipc_file_mode
 		self._reset_socket()
 
 	def _reset_socket(self):
 		if self.sock is not None:
-			self.sock.linger = 0
 			self.sock.close()
-		self.sock = zmq_context.socket(zmq.DEALER)
-		for spec in self.specs:
-			self.sock.connect(spec)
+		self.sock = self.context.socket(zmq.DEALER)
+		self.sock.linger = 0
+		if self.use_bind:
+			spec = self.specs[0]
+			self.sock.bind(spec)
+			if spec.startswith('ipc://') and self.ipc_file_mode is not None:
+				os.chmod(spec[6:], self.ipc_file_mode)
+		else:
+			for spec in self.specs:
+				self.sock.connect(spec)
 
-	def call(self, method, args):
+	def call(self, method, args, timeout=10000):
 		req = dict()
 		req['id'] = str(uuid.uuid4())
 		req['method'] = ensure_utf8(method)
 		req['args'] = ensure_utf8(args)
 		req_raw = tnetstring.dumps(req)
+		start = int(time.clock() * 1000)
 		try:
-			if not self.sock.poll(30000, zmq.POLLOUT):
+			if not self.sock.poll(timeout, zmq.POLLOUT):
 				raise CallError('send-timeout')
 			m_list = list()
 			m_list.append('')
@@ -79,11 +92,10 @@ class RpcClient(object):
 			self.sock.send_multipart(m_list)
 		except zmq.ZMQError as e:
 			raise CallError('send-failed', e.message)
-		start = int(time.clock() * 1000)
 		while True:
 			elapsed = max(int(time.clock() * 1000) - start, 0)
 			try:
-				if not self.sock.poll(max(30000 - elapsed, 0), zmq.POLLIN):
+				if not self.sock.poll(max(timeout - elapsed, 0), zmq.POLLIN):
 					raise CallError('receive-timeout')
 				m_list = self.sock.recv_multipart()
 			except zmq.ZMQError as e:
@@ -119,7 +131,7 @@ class RpcClient(object):
 			raise CallError(resp['condition'])
 
 class RpcServer(object):
-	def __init__(self, rep_sock_spec, context=None):
+	def __init__(self, rep_sock_spec, context=None, ipc_file_mode=None):
 		if context:
 			self.context = context
 		else:
@@ -128,10 +140,11 @@ class RpcServer(object):
 		self.control_sock = self.context.socket(zmq.PAIR)
 		self.control_sock.bind(self.control_spec)
 		self.rep_sock = self.context.socket(zmq.REP)
+		self.rep_sock.linger = 0
 		self.rep_sock.bind(rep_sock_spec)
 		self.req_id = None
-		if rep_sock_spec.startswith('ipc://'):
-			os.chmod(rep_sock_spec[6:], 0o777)
+		if rep_sock_spec.startswith('ipc://') and ipc_file_mode is not None:
+			os.chmod(rep_sock_spec[6:], ipc_file_mode)
 
 	def _respond(self, value):
 		resp = dict()
@@ -191,7 +204,6 @@ class RpcServer(object):
 					traceback.print_exc()
 					self._respond_error('internal-server-error')
 
-		self.rep_sock.linger = 0
 		self.rep_sock.close()
 		self.control_sock.send('finished')
 		self.control_sock.close()

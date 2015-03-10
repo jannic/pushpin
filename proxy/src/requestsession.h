@@ -22,21 +22,23 @@
 
 #include <QObject>
 #include "zhttprequest.h"
+#include "domainmap.h"
 
 class QHostAddress;
 
 class HttpRequestData;
+class SockJsManager;
 class InspectData;
 class AcceptData;
-class InspectManager;
-class InspectChecker;
+class ZrpcManager;
+class ZrpcChecker;
 
 class RequestSession : public QObject
 {
 	Q_OBJECT
 
 public:
-	RequestSession(InspectManager *inspectManager, InspectChecker *inspectChecker, QObject *parent = 0);
+	RequestSession(DomainMap *domainMap, SockJsManager *sockJsManager, ZrpcManager *inspectManager, ZrpcChecker *inspectChecker, ZrpcManager *accept, QObject *parent = 0);
 	~RequestSession();
 
 	bool isRetry() const;
@@ -46,7 +48,9 @@ public:
 	HttpRequestData requestData() const;
 	bool autoCrossOrigin() const;
 	QByteArray jsonpCallback() const; // non-empty if JSON-P is used
+	bool jsonpExtendedResponse() const;
 	bool haveCompleteRequestBody() const;
+	DomainMap::Entry route() const;
 
 	ZhttpRequest *request();
 
@@ -54,14 +58,16 @@ public:
 
 	// takes ownership
 	void start(ZhttpRequest *req);
-	void startRetry(ZhttpRequest *req, bool autoCrossOrigin, const QByteArray &jsonpCallback);
+	void startRetry(ZhttpRequest *req, bool autoCrossOrigin, const QByteArray &jsonpCallback, bool jsonpExtendedResponse);
 
 	void pause();
+	void resume();
 
 	void startResponse(int code, const QByteArray &reason, const HttpHeaders &headers);
 	void writeResponseBody(const QByteArray &body);
 	void endResponseBody();
 
+	void respond(int code, const QByteArray &reason, const HttpHeaders &headers, const QByteArray &body);
 	void respondError(int code, const QString &reason, const QString &errorString);
 	void respondCannotAccept();
 
@@ -69,7 +75,7 @@ signals:
 	void inspected(const InspectData &idata);
 	void inspectError();
 	void finished();
-	void finishedForAccept(const AcceptData &adata);
+	void finishedByAccept();
 	void bytesWritten(int count);
 	void paused();
 

@@ -29,12 +29,14 @@
 #include "zhttpmanager.h"
 #include "zwebsocket.h"
 #include "websocketoverhttp.h"
-#include "domainmap.h"
+#include "zroutes.h"
 #include "wscontrolmanager.h"
 #include "wscontrolsession.h"
 #include "xffrule.h"
 #include "proxyutil.h"
 #include "statsmanager.h"
+#include "inspectdata.h"
+#include "connectionmanager.h"
 
 #define ACTIVITY_TIMEOUT 60000
 
@@ -216,8 +218,9 @@ public:
 
 	WsProxySession *q;
 	State state;
+	ZRoutes *zroutes;
 	ZhttpManager *zhttpManager;
-	DomainMap *domainMap;
+	ConnectionManager *connectionManager;
 	StatsManager *statsManager;
 	WsControlManager *wsControlManager;
 	WsControlSession *wsControl;
@@ -230,8 +233,7 @@ public:
 	XffRule xffTrustedRule;
 	QList<QByteArray> origHeadersNeedMark;
 	HttpRequestData requestData;
-	ZWebSocket::Rid rid;
-	ZWebSocket *inSock;
+	WebSocket *inSock;
 	WebSocket *outSock;
 	int inPendingBytes;
 	int outPendingBytes;
@@ -244,13 +246,15 @@ public:
 	bool detached;
 	QString subChannel;
 	QTimer *activityTimer;
+	QByteArray publicCid;
 
-	Private(WsProxySession *_q, ZhttpManager *_zhttpManager, DomainMap *_domainMap, StatsManager *_statsManager, WsControlManager *_wsControlManager) :
+	Private(WsProxySession *_q, ZRoutes *_zroutes, ConnectionManager *_connectionManager, StatsManager *_statsManager, WsControlManager *_wsControlManager) :
 		QObject(_q),
 		q(_q),
 		state(Idle),
-		zhttpManager(_zhttpManager),
-		domainMap(_domainMap),
+		zroutes(_zroutes),
+		zhttpManager(0),
+		connectionManager(_connectionManager),
 		statsManager(_statsManager),
 		wsControlManager(_wsControlManager),
 		wsControl(0),
@@ -276,8 +280,12 @@ public:
 
 	void cleanup()
 	{
-		delete inSock;
-		inSock = 0;
+		if(inSock)
+		{
+			connectionManager->removeConnection(inSock);
+			delete inSock;
+			inSock = 0;
+		}
 
 		delete outSock;
 		outSock = 0;
@@ -292,15 +300,21 @@ public:
 			activityTimer->deleteLater();
 			activityTimer = 0;
 		}
+
+		if(zhttpManager)
+		{
+			zroutes->removeRef(zhttpManager);
+			zhttpManager = 0;
+		}
 	}
 
-	void start(ZWebSocket *sock)
+	void start(WebSocket *sock, const QByteArray &_publicCid, const DomainMap::Entry &entry)
 	{
 		assert(!inSock);
 
 		state = Connecting;
 
-		rid = sock->rid();
+		publicCid = _publicCid;
 
 		if(statsManager)
 			activityTimer->start(ACTIVITY_TIMEOUT);
@@ -317,9 +331,7 @@ public:
 		requestData.headers = inSock->requestHeaders();
 
 		QString host = requestData.uri.host();
-		bool isSecure = (requestData.uri.scheme() == "wss");
 
-		DomainMap::Entry entry = domainMap->entry(DomainMap::WebSocket, isSecure, host, requestData.uri.encodedPath());
 		if(entry.isNull())
 		{
 			log_warning("wsproxysession: %p %s has 0 routes", q, qPrintable(host));
@@ -349,7 +361,7 @@ public:
 
 		log_debug("wsproxysession: %p %s has %d routes", q, qPrintable(host), targets.count());
 
-		bool trustedClient = ProxyUtil::manipulateRequestHeaders("wsproxysession", q, &requestData, defaultUpstreamKey, entry, sigIss, sigKey, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, inSock->peerAddress());
+		bool trustedClient = ProxyUtil::manipulateRequestHeaders("wsproxysession", q, &requestData, defaultUpstreamKey, entry, sigIss, sigKey, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, inSock->peerAddress(), InspectData());
 
 		// don't proxy extensions, as we may not know how to handle them
 		requestData.headers.removeAll("Sec-WebSocket-Extensions");
@@ -384,14 +396,37 @@ public:
 
 		subChannel = target.subChannel;
 
-		log_debug("wsproxysession: %p forwarding to %s:%d", q, qPrintable(target.connectHost), target.connectPort);
+		if(zhttpManager)
+			zroutes->removeRef(zhttpManager);
+
+		if(target.type == DomainMap::Target::Custom)
+		{
+			zhttpManager = zroutes->managerForRoute(target.zhttpRoute);
+			log_debug("wsproxysession: %p forwarding to %s", q, qPrintable(target.zhttpRoute.baseSpec));
+		}
+		else // Default
+		{
+			zhttpManager = zroutes->defaultManager();
+			log_debug("wsproxysession: %p forwarding to %s:%d", q, qPrintable(target.connectHost), target.connectPort);
+		}
+
+		zroutes->addRef(zhttpManager);
 
 		if(target.overHttp)
 		{
-			outSock = new WebSocketOverHttp(zhttpManager, this);
+			WebSocketOverHttp *woh = new WebSocketOverHttp(zhttpManager, this);
+			woh->setConnectionId(publicCid);
+			outSock = woh;
 		}
 		else
 		{
+			// websockets don't work with zhttp req mode
+			if(zhttpManager->clientUsesReq())
+			{
+				reject(502, "Bad Gateway", "Error while proxying to origin.");
+				return;
+			}
+
 			outSock = zhttpManager->createSocket();
 			outSock->setParent(this);
 		}
@@ -409,8 +444,11 @@ public:
 		if(target.insecure)
 			outSock->setIgnoreTlsErrors(true);
 
-		outSock->setConnectHost(target.connectHost);
-		outSock->setConnectPort(target.connectPort);
+		if(target.type == DomainMap::Target::Default)
+		{
+			outSock->setConnectHost(target.connectHost);
+			outSock->setConnectPort(target.connectPort);
+		}
 
 		outSock->start(uri, requestData.headers);
 	}
@@ -538,7 +576,7 @@ private slots:
 
 		inPendingBytes -= contentBytes;
 
-		if(!detached)
+		if(!detached && outSock)
 			tryReadOut();
 	}
 
@@ -550,24 +588,39 @@ private slots:
 		}
 		else
 		{
-			if(outSock && outSock->state() != WebSocket::Closing)
-				outSock->close();
+			if(outSock)
+			{
+				if(outSock->state() == WebSocket::Connecting)
+				{
+					delete outSock;
+					outSock = 0;
+
+					inSock->close();
+				}
+				else if(outSock->state() == WebSocket::Connected)
+				{
+					outSock->close(inSock->peerCloseCode());
+				}
+			}
 		}
 	}
 
 	void in_closed()
 	{
+		int code = inSock->peerCloseCode();
+		connectionManager->removeConnection(inSock);
 		delete inSock;
 		inSock = 0;
 
 		if(!detached && outSock && outSock->state() != WebSocket::Closing)
-			outSock->close();
+			outSock->close(code);
 
 		tryFinish();
 	}
 
 	void in_error()
 	{
+		connectionManager->removeConnection(inSock);
 		delete inSock;
 		inSock = 0;
 
@@ -607,7 +660,7 @@ private slots:
 
 			if(wsControlManager)
 			{
-				wsControl = wsControlManager->createSession();
+				wsControl = wsControlManager->createSession(publicCid);
 				connect(wsControl, SIGNAL(sendEventReceived(const QByteArray &, const QByteArray &)), SLOT(wsControl_sendEventReceived(const QByteArray &, const QByteArray &)));
 				connect(wsControl, SIGNAL(detachEventReceived()), SLOT(wsControl_detachEventReceived()));
 				wsControl->start(channelPrefix);
@@ -642,23 +695,24 @@ private slots:
 
 		outPendingBytes -= contentBytes;
 
-		if(!detached)
+		if(!detached && inSock)
 			tryReadIn();
 	}
 
 	void out_peerClosed()
 	{
 		if(!detached && inSock && inSock->state() != WebSocket::Closing)
-			inSock->close();
+			inSock->close(outSock->peerCloseCode());
 	}
 
 	void out_closed()
 	{
+		int code = outSock->peerCloseCode();
 		delete outSock;
 		outSock = 0;
 
 		if(!detached && inSock && inSock->state() != WebSocket::Closing)
-			inSock->close();
+			inSock->close(code);
 
 		tryFinish();
 	}
@@ -704,6 +758,7 @@ private slots:
 		}
 		else
 		{
+			connectionManager->removeConnection(inSock);
 			delete inSock;
 			inSock = 0;
 			delete outSock;
@@ -745,10 +800,10 @@ private slots:
 	}
 };
 
-WsProxySession::WsProxySession(ZhttpManager *zhttpManager, DomainMap *domainMap, StatsManager *statsManager, WsControlManager *wsControlManager, QObject *parent) :
+WsProxySession::WsProxySession(ZRoutes *zroutes, ConnectionManager *connectionManager, StatsManager *statsManager, WsControlManager *wsControlManager, QObject *parent) :
 	QObject(parent)
 {
-	d = new Private(this, zhttpManager, domainMap, statsManager, wsControlManager);
+	d = new Private(this, zroutes, connectionManager, statsManager, wsControlManager);
 }
 
 WsProxySession::~WsProxySession()
@@ -761,9 +816,9 @@ QByteArray WsProxySession::routeId() const
 	return d->routeId;
 }
 
-ZWebSocket::Rid WsProxySession::rid() const
+QByteArray WsProxySession::cid() const
 {
-	return d->rid;
+	return d->publicCid;
 }
 
 void WsProxySession::setDefaultSigKey(const QByteArray &iss, const QByteArray &key)
@@ -793,9 +848,9 @@ void WsProxySession::setOrigHeadersNeedMark(const QList<QByteArray> &names)
 	d->origHeadersNeedMark = names;
 }
 
-void WsProxySession::start(ZWebSocket *sock)
+void WsProxySession::start(WebSocket *sock, const QByteArray &publicCid, const DomainMap::Entry &route)
 {
-	d->start(sock);
+	d->start(sock, publicCid, route);
 }
 
 #include "wsproxysession.moc"

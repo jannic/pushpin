@@ -27,15 +27,16 @@
 #include "log.h"
 #include "tnetstring.h"
 #include "packet/statspacket.h"
+#include "zutil.h"
 
 // make this somewhat big since PUB is lossy
 #define OUT_HWM 200000
 
 #define ACTIVITY_TIMEOUT 100
 #define CONNECTION_TTL 600
-#define CONNECTION_REFRESH 540
+#define CONNECTION_REFRESH (CONNECTION_TTL * 9 / 10)
 #define CONNECTION_LINGER 60
-#define REFRESH_TIMEOUT 30000
+#define REFRESH_TIMEOUT (30 * 1000)
 
 // FIXME: trickle connection refreshes rather than all at once on an interval
 
@@ -64,6 +65,7 @@ public:
 
 	StatsManager *q;
 	QByteArray instanceId;
+	int ipcFileMode;
 	QString spec;
 	QZmq::Socket *sock;
 	QHash<QByteArray, int> routeActivity;
@@ -74,6 +76,7 @@ public:
 	Private(StatsManager *_q) :
 		QObject(_q),
 		q(_q),
+		ipcFileMode(-1),
 		sock(0)
 	{
 		activityTimer = new QTimer(this);
@@ -115,8 +118,12 @@ public:
 		sock->setHwm(OUT_HWM);
 		sock->setShutdownWaitTime(0);
 
-		if(!sock->bind(spec))
+		QString errorMessage;
+		if(!ZUtil::setupSocket(sock, spec, true, ipcFileMode, &errorMessage))
+		{
+			log_error("%s", qPrintable(errorMessage));
 			return false;
+		}
 
 		return true;
 	}
@@ -130,9 +137,12 @@ public:
 			prefix = "activity ";
 		else
 			prefix = "conn ";
-		QByteArray buf = prefix + TnetString::fromVariant(packet.toVariant());
 
-		log_debug("stats: OUT %s", buf.data());
+		QVariant vpacket = packet.toVariant();
+		QByteArray buf = prefix + TnetString::fromVariant(vpacket);
+
+		if(log_outputLevel() >= LOG_LEVEL_DEBUG)
+			log_debug("stats: OUT %s %s", prefix.data(), qPrintable(TnetString::variantToString(vpacket, -1)));
 
 		sock->write(QList<QByteArray>() << buf);
 	}
@@ -237,6 +247,11 @@ StatsManager::~StatsManager()
 void StatsManager::setInstanceId(const QByteArray &instanceId)
 {
 	d->instanceId = instanceId;
+}
+
+void StatsManager::setIpcFileMode(int mode)
+{
+	d->ipcFileMode = mode;
 }
 
 bool StatsManager::setSpec(const QString &spec)

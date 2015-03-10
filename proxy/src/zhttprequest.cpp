@@ -22,15 +22,16 @@
 #include <assert.h>
 #include <QTimer>
 #include <QPointer>
-#include <QUuid>
 #include "zhttprequestpacket.h"
 #include "zhttpresponsepacket.h"
 #include "bufferlist.h"
 #include "log.h"
 #include "zhttpmanager.h"
+#include "uuidutil.h"
 
 #define IDEAL_CREDITS 200000
 #define SESSION_EXPIRE 60000
+#define REQ_BUF_MAX 1000000
 
 class ZhttpRequest::Private : public QObject
 {
@@ -59,6 +60,7 @@ public:
 	bool server;
 	State state;
 	ZhttpRequest::Rid rid;
+	bool doReq;
 	QByteArray toAddress;
 	QHostAddress peerAddress;
 	QString connectHost;
@@ -84,6 +86,7 @@ public:
 	bool pausing;
 	bool paused;
 	bool pendingUpdate;
+	bool errored;
 	ZhttpRequest::ErrorCondition errorCondition;
 	QTimer *expireTimer;
 	QTimer *keepAliveTimer;
@@ -94,6 +97,7 @@ public:
 		manager(0),
 		server(false),
 		state(Stopped),
+		doReq(false),
 		connectPort(-1),
 		ignorePolicies(false),
 		ignoreTlsErrors(false),
@@ -107,6 +111,7 @@ public:
 		pausing(false),
 		paused(false),
 		pendingUpdate(false),
+		errored(false),
 		expireTimer(0),
 		keepAliveTimer(0)
 	{
@@ -209,6 +214,7 @@ public:
 		requestMethod = ss.requestMethod;
 		requestUri = ss.requestUri;
 		requestHeaders = ss.requestHeaders;
+		requestBodyBuf += ss.requestBody;
 		if(ss.inSeq >= 0)
 			inSeq = ss.inSeq;
 		if(ss.outSeq >= 0)
@@ -247,10 +253,21 @@ public:
 
 	void pause()
 	{
+		assert(!doReq);
 		pausing = true;
 
 		ZhttpResponsePacket p;
 		p.type = ZhttpResponsePacket::HandoffStart;
+		writePacket(p);
+	}
+
+	void resume()
+	{
+		assert(paused);
+		paused = false;
+
+		ZhttpResponsePacket p;
+		p.type = ZhttpResponsePacket::KeepAlive;
 		writePacket(p);
 	}
 
@@ -400,6 +417,7 @@ public:
 
 		if(packet.type == ZhttpRequestPacket::Error)
 		{
+			errored = true;
 			errorCondition = convertError(packet.condition);
 
 			log_debug("zhttp server: error id=%s cond=%s", packet.id.data(), packet.condition.data());
@@ -413,6 +431,7 @@ public:
 		{
 			log_debug("zhttp server: received cancel id=%s", packet.id.data());
 
+			errored = true;
 			errorCondition = ErrorGeneric;
 			state = Stopped;
 			cleanup();
@@ -433,6 +452,7 @@ public:
 			}
 
 			state = Stopped;
+			errored = true;
 			errorCondition = ErrorGeneric;
 			cleanup();
 			emit q->error();
@@ -495,6 +515,7 @@ public:
 			if(packet.from.isEmpty())
 			{
 				state = Stopped;
+				errored = true;
 				errorCondition = ErrorGeneric;
 				cleanup();
 				log_warning("zhttp client: error id=%s initial ack for streamed input request did not contain from field", packet.id.data());
@@ -514,11 +535,13 @@ public:
 
 			state = ClientReceiving;
 
-			startKeepAlive();
+			if(!doReq)
+				startKeepAlive();
 		}
 
 		if(packet.type == ZhttpResponsePacket::Error)
 		{
+			errored = true;
 			errorCondition = convertError(packet.condition);
 
 			log_debug("zhttp client: error id=%s cond=%s", packet.id.data(), packet.condition.data());
@@ -532,6 +555,7 @@ public:
 		{
 			log_debug("zhttp client: received cancel id=%s", packet.id.data());
 
+			errored = true;
 			errorCondition = ErrorGeneric;
 			state = Stopped;
 			cleanup();
@@ -539,7 +563,8 @@ public:
 			return;
 		}
 
-		if(packet.seq != inSeq)
+		// if non-req mode, check sequencing
+		if(!doReq && packet.seq != inSeq)
 		{
 			log_warning("zhttp client: error id=%s received message out of sequence, canceling", packet.id.data());
 
@@ -552,6 +577,7 @@ public:
 			}
 
 			state = Stopped;
+			errored = true;
 			errorCondition = ErrorGeneric;
 			cleanup();
 			emit q->error();
@@ -561,6 +587,18 @@ public:
 		++inSeq;
 
 		refreshTimeout();
+
+		if(doReq && (packet.type != ZhttpResponsePacket::Data || packet.more))
+		{
+			log_warning("zhttp/zws client req: received invalid req response");
+
+			state = Stopped;
+			errored = true;
+			errorCondition = ErrorGeneric;
+			cleanup();
+			emit q->error();
+			return;
+		}
 
 		if(packet.type == ZhttpResponsePacket::Data)
 		{
@@ -573,12 +611,20 @@ public:
 				responseHeaders = packet.headers;
 			}
 
-			if(responseBodyBuf.size() + packet.body.size() > IDEAL_CREDITS)
-				log_warning("zhttp client: id=%s server is sending too fast", packet.id.data());
+			if(doReq)
+			{
+				if(responseBodyBuf.size() + packet.body.size() > REQ_BUF_MAX)
+					log_warning("zhttp client req: id=%s server response too large", packet.id.data());
+			}
+			else
+			{
+				if(responseBodyBuf.size() + packet.body.size() > IDEAL_CREDITS)
+					log_warning("zhttp client: id=%s server is sending too fast", packet.id.data());
+			}
 
 			responseBodyBuf += packet.body;
 
-			if(packet.credits > 0)
+			if(!doReq && packet.credits > 0)
 			{
 				outCredits += packet.credits;
 				if(outCredits > 0)
@@ -652,16 +698,24 @@ public:
 		ZhttpRequestPacket out = packet;
 		out.from = rid.first;
 		out.id = rid.second;
-		out.seq = outSeq++;
-		
-		if(out.seq == 0)
+
+		if(doReq)
 		{
 			manager->writeHttp(out);
 		}
 		else
 		{
-			assert(!toAddress.isEmpty());
-			manager->writeHttp(out, toAddress);
+			out.seq = outSeq++;
+
+			if(out.seq == 0)
+			{
+				manager->writeHttp(out);
+			}
+			else
+			{
+				assert(!toAddress.isEmpty());
+				manager->writeHttp(out, toAddress);
+			}
 		}
 	}
 
@@ -699,9 +753,12 @@ public:
 		{
 			state = Stopped;
 
-			ZhttpRequestPacket p;
-			p.type = ZhttpRequestPacket::Cancel;
-			writePacket(p);
+			if(!doReq)
+			{
+				ZhttpRequestPacket p;
+				p.type = ZhttpRequestPacket::Cancel;
+				writePacket(p);
+			}
 		}
 		else if(server)
 		{
@@ -741,6 +798,8 @@ public:
 			return ErrorLengthRequired;
 		else if(cond == "connection-timeout")
 			return ErrorConnectTimeout;
+		else if(cond == "disconnected")
+			return ErrorDisconnected;
 		else // lump the rest as generic
 			return ErrorGeneric;
 	}
@@ -752,42 +811,81 @@ public slots:
 
 		if(state == ClientStarting)
 		{
-			if(!manager->canWriteImmediately())
+			if(doReq)
 			{
-				state = Stopped;
-				errorCondition = ZhttpRequest::ErrorUnavailable;
-				emit q->error();
-				cleanup();
-				return;
+				if(requestBodyBuf.size() > REQ_BUF_MAX)
+				{
+					state = Stopped;
+					errored = true;
+					errorCondition = ZhttpRequest::ErrorRequestTooLarge;
+					emit q->error();
+					cleanup();
+					return;
+				}
+
+				// for req mode, wait until request is fully supplied then send in one packet
+				if(bodyFinished)
+				{
+					ZhttpRequestPacket p;
+					p.type = ZhttpRequestPacket::Data;
+					p.method = requestMethod;
+					p.uri = requestUri;
+					p.headers = requestHeaders;
+					p.body = requestBodyBuf.take();
+					p.maxSize = REQ_BUF_MAX;
+					p.connectHost = connectHost;
+					p.connectPort = connectPort;
+					if(ignorePolicies)
+						p.ignorePolicies = true;
+					if(ignoreTlsErrors)
+						p.ignoreTlsErrors = true;
+					writePacket(p);
+
+					state = ClientRequestFinishWait;
+				}
 			}
-
-			// even though we don't have credits yet, we can act
-			//   like we do on the first packet. we'll still cap
-			//   our potential size though.
-			QByteArray buf = requestBodyBuf.take(IDEAL_CREDITS);
-
-			ZhttpRequestPacket p;
-			p.type = ZhttpRequestPacket::Data;
-			p.method = requestMethod;
-			p.uri = requestUri;
-			p.headers = requestHeaders;
-			p.body = buf;
-			if(!requestBodyBuf.isEmpty() || !bodyFinished)
-				p.more = true;
-			p.stream = true;
-			p.connectHost = connectHost;
-			p.connectPort = connectPort;
-			if(ignorePolicies)
-				p.ignorePolicies = true;
-			if(ignoreTlsErrors)
-				p.ignoreTlsErrors = true;
-			p.credits = IDEAL_CREDITS;
-			writePacket(p);
-
-			if(p.more)
-				state = ClientRequestStartWait;
 			else
-				state = ClientRequestFinishWait;
+			{
+				// NOTE: not quite sure why we do this. maybe to avoid a
+				//   zhttp PUSH/SUB race?
+				if(!manager->canWriteImmediately())
+				{
+					state = Stopped;
+					errored = true;
+					errorCondition = ZhttpRequest::ErrorUnavailable;
+					emit q->error();
+					cleanup();
+					return;
+				}
+
+				// even though we don't have credits yet, we can act
+				//   like we do on the first packet. we'll still cap
+				//   our potential size though.
+				QByteArray buf = requestBodyBuf.take(IDEAL_CREDITS);
+
+				ZhttpRequestPacket p;
+				p.type = ZhttpRequestPacket::Data;
+				p.method = requestMethod;
+				p.uri = requestUri;
+				p.headers = requestHeaders;
+				p.body = buf;
+				if(!requestBodyBuf.isEmpty() || !bodyFinished)
+					p.more = true;
+				p.stream = true;
+				p.connectHost = connectHost;
+				p.connectPort = connectPort;
+				if(ignorePolicies)
+					p.ignorePolicies = true;
+				if(ignoreTlsErrors)
+					p.ignoreTlsErrors = true;
+				p.credits = IDEAL_CREDITS;
+				writePacket(p);
+
+				if(p.more)
+					state = ClientRequestStartWait;
+				else
+					state = ClientRequestFinishWait;
+			}
 		}
 		else if(state == ClientRequesting)
 		{
@@ -796,9 +894,25 @@ public slots:
 		else if(state == ServerStarting)
 		{
 			if(haveRequestBody)
+			{
 				state = ServerResponseWait;
+
+				// send ack
+				ZhttpResponsePacket p;
+				p.type = ZhttpResponsePacket::KeepAlive;
+				writePacket(p);
+			}
 			else
+			{
 				state = ServerReceiving;
+
+				// send credits ack
+				ZhttpResponsePacket p;
+				p.type = ZhttpResponsePacket::Credit;
+				p.credits = IDEAL_CREDITS - responseBodyBuf.size();
+				writePacket(p);
+			}
+
 			emit q->readyRead();
 		}
 		else if(state == ServerResponseStarting)
@@ -837,6 +951,7 @@ public slots:
 		tryCancel();
 
 		state = Stopped;
+		errored = true;
 		errorCondition = ZhttpRequest::ErrorTimeout;
 		cleanup();
 		emit q->error();
@@ -913,7 +1028,7 @@ void ZhttpRequest::start(const QString &method, const QUrl &uri, const HttpHeade
 void ZhttpRequest::beginResponse(int code, const QByteArray &reason, const HttpHeaders &headers)
 {
 	assert(d->server);
-	assert(d->state == Private::ServerResponseWait);
+	assert(d->state == Private::ServerReceiving || d->state == Private::ServerResponseWait);
 
 	d->responseCode = code;
 	d->responseReason = reason;
@@ -935,6 +1050,12 @@ void ZhttpRequest::pause()
 {
 	assert(d->server);
 	d->pause();
+}
+
+void ZhttpRequest::resume()
+{
+	assert(d->server);
+	d->resume();
 }
 
 ZhttpRequest::ServerState ZhttpRequest::serverState() const
@@ -980,6 +1101,11 @@ bool ZhttpRequest::isOutputFinished() const
 		return (d->state == Private::Stopped || d->state == Private::ClientRequestFinishWait || d->state == Private::ClientReceiving);
 }
 
+bool ZhttpRequest::isErrored() const
+{
+	return d->errored;
+}
+
 ZhttpRequest::ErrorCondition ZhttpRequest::errorCondition() const
 {
 	return d->errorCondition;
@@ -1020,10 +1146,11 @@ QByteArray ZhttpRequest::readBody(int size)
 	return d->readBody(size);
 }
 
-void ZhttpRequest::setupClient(ZhttpManager *manager)
+void ZhttpRequest::setupClient(ZhttpManager *manager, bool req)
 {
 	d->manager = manager;
-	d->rid = Rid(manager->instanceId(), QUuid::createUuid().toString().toLatin1());
+	d->rid = Rid(manager->instanceId(), UuidUtil::createUuid());
+	d->doReq = req;
 	d->manager->link(this);
 }
 

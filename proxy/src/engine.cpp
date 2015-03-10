@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2014 Fanout, Inc.
+ * Copyright (C) 2012-2015 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -23,7 +23,6 @@
 #include "qzmqsocket.h"
 #include "qzmqvalve.h"
 #include "tnetstring.h"
-#include "packet/acceptresponsepacket.h"
 #include "packet/retryrequestpacket.h"
 #include "log.h"
 #include "inspectdata.h"
@@ -32,15 +31,19 @@
 #include "zhttprequest.h"
 #include "zwebsocket.h"
 #include "domainmap.h"
-#include "inspectmanager.h"
-#include "inspectchecker.h"
+#include "zroutes.h"
+#include "zrpcmanager.h"
+#include "zrpcrequest.h"
+#include "zrpcchecker.h"
 #include "wscontrolmanager.h"
 #include "requestsession.h"
 #include "proxysession.h"
 #include "wsproxysession.h"
 #include "statsmanager.h"
-#include "zrpcmanager.h"
-#include "zrpcrequest.h"
+#include "connectionmanager.h"
+#include "zutil.h"
+#include "sockjsmanager.h"
+#include "sockjssession.h"
 
 #define DEFAULT_HWM 1000
 
@@ -80,40 +83,49 @@ public:
 	};
 
 	Engine *q;
+	bool destroying;
 	Configuration config;
-	ZhttpManager *zhttp;
-	InspectManager *inspect;
+	ZhttpManager *zhttpIn;
+	ZRoutes *zroutes;
+	ZrpcManager *inspect;
 	WsControlManager *wsControl;
 	DomainMap *domainMap;
-	InspectChecker *inspectChecker;
+	ZrpcChecker *inspectChecker;
 	StatsManager *stats;
-	ZrpcManager *rpc;
+	ZrpcManager *command;
+	ZrpcManager *accept;
 	QZmq::Socket *handler_retry_in_sock;
-	QZmq::Socket *handler_accept_out_sock;
 	QZmq::Valve *handler_retry_in_valve;
 	QSet<RequestSession*> requestSessions;
 	QHash<QByteArray, ProxyItem*> proxyItemsByKey;
 	QHash<ProxySession*, ProxyItem*> proxyItemsBySession;
 	QHash<WsProxySession*, WsProxyItem*> wsProxyItemsBySession;
+	SockJsManager *sockJsManager;
+	ConnectionManager connectionManager;
 
 	Private(Engine *_q) :
 		QObject(_q),
 		q(_q),
-		zhttp(0),
+		destroying(false),
+		zhttpIn(0),
+		zroutes(0),
 		inspect(0),
 		wsControl(0),
 		domainMap(0),
 		inspectChecker(0),
 		stats(0),
-		rpc(0),
+		command(0),
+		accept(0),
 		handler_retry_in_sock(0),
-		handler_accept_out_sock(0),
-		handler_retry_in_valve(0)
+		handler_retry_in_valve(0),
+		sockJsManager(0)
 	{
 	}
 
 	~Private()
 	{
+		destroying = true;
+
 		QHashIterator<ProxySession*, ProxyItem*> it(proxyItemsBySession);
 		while(it.hasNext())
 		{
@@ -124,7 +136,6 @@ public:
 
 		proxyItemsBySession.clear();
 		proxyItemsByKey.clear();
-		requestSessions.clear();
 
 		QHashIterator<WsProxySession*, WsProxyItem*> wit(wsProxyItemsBySession);
 		while(wit.hasNext())
@@ -135,6 +146,14 @@ public:
 		}
 
 		wsProxyItemsBySession.clear();
+
+		foreach(RequestSession *rs, requestSessions)
+			delete rs;
+		requestSessions.clear();
+
+		// need to make sure this is deleted before inspect manager
+		delete inspectChecker;
+		inspectChecker = 0;
 	}
 
 	bool start(const Configuration &_config)
@@ -142,33 +161,55 @@ public:
 		config = _config;
 
 		domainMap = new DomainMap(config.routesFile);
+		connect(domainMap, SIGNAL(changed()), SLOT(domainMap_changed()));
 
-		zhttp = new ZhttpManager(this);
-		connect(zhttp, SIGNAL(requestReady()), SLOT(zhttp_requestReady()));
-		connect(zhttp, SIGNAL(socketReady()), SLOT(zhttp_socketReady()));
+		zhttpIn = new ZhttpManager(this);
+		connect(zhttpIn, SIGNAL(requestReady()), SLOT(zhttpIn_requestReady()));
+		connect(zhttpIn, SIGNAL(socketReady()), SLOT(zhttpIn_socketReady()));
 
-		zhttp->setInstanceId(config.clientId);
+		zhttpIn->setInstanceId(config.clientId);
+		zhttpIn->setServerInSpecs(config.serverInSpecs);
+		zhttpIn->setServerInStreamSpecs(config.serverInStreamSpecs);
+		zhttpIn->setServerOutSpecs(config.serverOutSpecs);
 
-		zhttp->setServerInSpecs(config.serverInSpecs);
-		zhttp->setServerInStreamSpecs(config.serverInStreamSpecs);
-		zhttp->setServerOutSpecs(config.serverOutSpecs);
+		zroutes = new ZRoutes(this);
+		zroutes->setInstanceId(config.clientId);
+		zroutes->setDefaultOutSpecs(config.clientOutSpecs);
+		zroutes->setDefaultOutStreamSpecs(config.clientOutStreamSpecs);
+		zroutes->setDefaultInSpecs(config.clientInSpecs);
 
-		zhttp->setClientOutSpecs(config.clientOutSpecs);
-		zhttp->setClientOutStreamSpecs(config.clientOutStreamSpecs);
-		zhttp->setClientInSpecs(config.clientInSpecs);
+		sockJsManager = new SockJsManager(config.sockJsUrl, this);
+		connect(sockJsManager, SIGNAL(sessionReady()), SLOT(sockjs_sessionReady()));
 
 		if(!config.inspectSpec.isEmpty())
 		{
-			inspect = new InspectManager(this);
-			if(!inspect->setSpec(config.inspectSpec))
+			inspect = new ZrpcManager(this);
+			inspect->setBind(true);
+			inspect->setIpcFileMode(config.ipcFileMode);
+			if(!inspect->setClientSpecs(QStringList() << config.inspectSpec))
 			{
-				log_error("unable to bind to handler_inspect_spec: %s", qPrintable(config.inspectSpec));
+				// zrpcmanager logs error
 				return false;
 			}
 
 			inspect->setTimeout(config.inspectTimeout);
 
-			inspectChecker = new InspectChecker(this);
+			inspectChecker = new ZrpcChecker(this);
+		}
+
+		if(!config.acceptSpec.isEmpty())
+		{
+			accept = new ZrpcManager(this);
+			accept->setBind(true);
+			accept->setIpcFileMode(config.ipcFileMode);
+			if(!accept->setClientSpecs(QStringList() << config.acceptSpec))
+			{
+				// zrpcmanager logs error
+				return false;
+			}
+
+			// there's no acceptTimeout config option so we'll reuse inspectTimeout
+			accept->setTimeout(config.inspectTimeout);
 		}
 
 		if(!config.retryInSpec.isEmpty())
@@ -177,28 +218,15 @@ public:
 
 			handler_retry_in_sock->setHwm(DEFAULT_HWM);
 
-			if(!handler_retry_in_sock->bind(config.retryInSpec))
+			QString errorMessage;
+			if(!ZUtil::setupSocket(handler_retry_in_sock, config.retryInSpec, true, config.ipcFileMode, &errorMessage))
 			{
-				log_error("unable to bind to handler_retry_in_spec: %s", qPrintable(config.retryInSpec));
+				log_error("%s", qPrintable(errorMessage));
 				return false;
 			}
 
 			handler_retry_in_valve = new QZmq::Valve(handler_retry_in_sock, this);
 			connect(handler_retry_in_valve, SIGNAL(readyRead(const QList<QByteArray> &)), SLOT(handler_retry_in_readyRead(const QList<QByteArray> &)));
-		}
-
-		if(!config.acceptOutSpec.isEmpty())
-		{
-			handler_accept_out_sock = new QZmq::Socket(QZmq::Socket::Push, this);
-
-			handler_accept_out_sock->setHwm(DEFAULT_HWM);
-
-			connect(handler_accept_out_sock, SIGNAL(messagesWritten(int)), SLOT(handler_accept_out_messagesWritten(int)));
-			if(!handler_accept_out_sock->bind(config.acceptOutSpec))
-			{
-				log_error("unable to bind to handler_accept_out_spec: %s", qPrintable(config.acceptOutSpec));
-				return false;
-			}
 		}
 
 		if(handler_retry_in_valve)
@@ -207,6 +235,8 @@ public:
 		if(!config.wsControlInSpec.isEmpty() && !config.wsControlOutSpec.isEmpty())
 		{
 			wsControl = new WsControlManager(this);
+
+			wsControl->setIpcFileMode(config.ipcFileMode);
 
 			if(!wsControl->setInSpec(config.wsControlInSpec))
 			{
@@ -226,6 +256,7 @@ public:
 			stats = new StatsManager(this);
 
 			stats->setInstanceId(config.clientId);
+			stats->setIpcFileMode(config.ipcFileMode);
 
 			if(!stats->setSpec(config.statsSpec))
 			{
@@ -236,15 +267,20 @@ public:
 
 		if(!config.commandSpec.isEmpty())
 		{
-			rpc = new ZrpcManager(this);
-			connect(rpc, SIGNAL(requestReady()), SLOT(rpc_requestReady()));
+			command = new ZrpcManager(this);
+			command->setBind(true);
+			command->setIpcFileMode(config.ipcFileMode);
+			connect(command, SIGNAL(requestReady()), SLOT(command_requestReady()));
 
-			if(!rpc->setInSpec(config.commandSpec))
+			if(!command->setServerSpecs(QStringList() << config.commandSpec))
 			{
-				log_error("unable to bind to command_spec: %s", qPrintable(config.commandSpec));
+				// zrpcmanager logs error
 				return false;
 			}
 		}
+
+		// init zroutes
+		domainMap_changed();
 
 		return true;
 	}
@@ -256,6 +292,11 @@ public:
 
 	void doProxy(RequestSession *rs, const InspectData *idata = 0, bool isRetry = false)
 	{
+		DomainMap::Entry route = rs->route();
+
+		// we'll always have a route
+		assert(!route.isNull());
+
 		bool sharable = (idata && !idata->sharingKey.isEmpty() && rs->haveCompleteRequestBody());
 
 		ProxySession *ps = 0;
@@ -272,12 +313,12 @@ public:
 		{
 			log_debug("creating proxysession for id=%s", rs->rid().second.data());
 
-			ps = new ProxySession(zhttp, domainMap, this);
+			ps = new ProxySession(zroutes, accept, this);
 			connect(ps, SIGNAL(addNotAllowed()), SLOT(ps_addNotAllowed()));
-			connect(ps, SIGNAL(finishedByPassthrough()), SLOT(ps_finishedByPassthrough()));
-			connect(ps, SIGNAL(finishedForAccept(const AcceptData &)), SLOT(ps_finishedForAccept(const AcceptData &)));
+			connect(ps, SIGNAL(finished()), SLOT(ps_finished()));
 			connect(ps, SIGNAL(requestSessionDestroyed(RequestSession *, bool)), SLOT(ps_requestSessionDestroyed(RequestSession *, bool)));
 
+			ps->setRoute(route);
 			ps->setDefaultSigKey(config.sigIss, config.sigKey);
 			ps->setDefaultUpstreamKey(config.upstreamKey);
 			ps->setUseXForwardedProtocol(config.useXForwardedProtocol);
@@ -308,56 +349,49 @@ public:
 
 		if(stats)
 		{
-			stats->addConnection(ridToString(rs->rid()), ps->routeId(), StatsManager::Http, rs->peerAddress(), rs->isHttps(), isRetry);
+			stats->addConnection(ridToString(rs->rid()), route.id, StatsManager::Http, rs->peerAddress(), rs->isHttps(), isRetry);
+			stats->addActivity(route.id);
+		}
+	}
+
+	void doProxySocket(WebSocket *sock, const DomainMap::Entry &route)
+	{
+		QByteArray cid = connectionManager.addConnection(sock);
+
+		WsProxySession *ps = new WsProxySession(zroutes, &connectionManager, stats, wsControl, this);
+		connect(ps, SIGNAL(finishedByPassthrough()), SLOT(wsps_finishedByPassthrough()));
+
+		ps->setDefaultSigKey(config.sigIss, config.sigKey);
+		ps->setDefaultUpstreamKey(config.upstreamKey);
+		ps->setUseXForwardedProtocol(config.useXForwardedProtocol);
+		ps->setXffRules(config.xffUntrustedRule, config.xffTrustedRule);
+		ps->setOrigHeadersNeedMark(config.origHeadersNeedMark);
+
+		WsProxyItem *i = new WsProxyItem;
+		i->ps = ps;
+		wsProxyItemsBySession.insert(i->ps, i);
+
+		ps->start(sock, cid, route);
+
+		if(stats)
+		{
+			stats->addConnection(cid, ps->routeId(), StatsManager::WebSocket, sock->peerAddress(), sock->requestUri().scheme() == "wss", false);
 			stats->addActivity(ps->routeId());
 		}
 	}
 
-	void sendAccept(const AcceptData &adata)
-	{
-		AcceptResponsePacket p;
-		foreach(const AcceptData::Request &areq, adata.requests)
-		{
-			AcceptResponsePacket::Request req;
-			req.rid = AcceptResponsePacket::Rid(areq.rid.first, areq.rid.second);
-			req.https = areq.https;
-			req.peerAddress = areq.peerAddress;
-			req.autoCrossOrigin = areq.autoCrossOrigin;
-			req.jsonpCallback = areq.jsonpCallback;
-			req.inSeq = areq.inSeq;
-			req.outSeq = areq.outSeq;
-			req.outCredits = areq.outCredits;
-			req.userData = areq.userData;
-			p.requests += req;
-		}
-
-		p.requestData = adata.requestData;
-
-		if(adata.haveInspectData)
-		{
-			p.haveInspectInfo = true;
-			p.inspectInfo.noProxy = !adata.inspectData.doProxy;
-			p.inspectInfo.sharingKey = adata.inspectData.sharingKey;
-			p.inspectInfo.userData = adata.inspectData.userData;
-		}
-
-		if(adata.haveResponse)
-		{
-			p.haveResponse = true;
-			p.response = adata.response;
-		}
-
-		p.route = adata.route;
-		p.channelPrefix = adata.channelPrefix;
-
-		QList<QByteArray> msg;
-		msg += TnetString::fromVariant(p.toVariant());
-		handler_accept_out_sock->write(msg);
-	}
-
 	bool canTake()
 	{
-		return (config.maxWorkers == -1 || (requestSessions.count() + wsProxyItemsBySession.count()) < config.maxWorkers);
+		// don't accept new connections during shutdown
+		if(destroying)
+			return false;
+
+		// don't accept new connections if we're servicing maximum
+		int curWorkers = requestSessions.count() + wsProxyItemsBySession.count();
+		if(config.maxWorkers != -1 && curWorkers >= config.maxWorkers)
+			return false;
+
+		return true;
 	}
 
 	void tryTakeRequest()
@@ -365,15 +399,15 @@ public:
 		if(!canTake())
 			return;
 
-		ZhttpRequest *req = zhttp->takeNextRequest();
+		ZhttpRequest *req = zhttpIn->takeNextRequest();
 		if(!req)
 			return;
 
-		RequestSession *rs = new RequestSession(inspect, inspectChecker, this);
+		RequestSession *rs = new RequestSession(domainMap, sockJsManager, inspect, inspectChecker, accept, this);
 		connect(rs, SIGNAL(inspected(const InspectData &)), SLOT(rs_inspected(const InspectData &)));
 		connect(rs, SIGNAL(inspectError()), SLOT(rs_inspectError()));
 		connect(rs, SIGNAL(finished()), SLOT(rs_finished()));
-		connect(rs, SIGNAL(finishedForAccept(const AcceptData &)), SLOT(rs_finishedForAccept(const AcceptData &)));
+		connect(rs, SIGNAL(finishedByAccept()), SLOT(rs_finishedByAccept()));
 
 		rs->setAutoCrossOrigin(config.autoCrossOrigin);
 
@@ -387,47 +421,65 @@ public:
 		if(!canTake())
 			return;
 
-		ZWebSocket *sock = zhttp->takeNextSocket();
+		ZWebSocket *sock = zhttpIn->takeNextSocket();
 		if(!sock)
 			return;
 
-		log_debug("creating wsproxysession for id=%s", sock->rid().second.data());
+		QUrl requestUri = sock->requestUri();
 
-		WsProxySession *ps = new WsProxySession(zhttp, domainMap, stats, wsControl, this);
-		connect(ps, SIGNAL(finishedByPassthrough()), SLOT(wsps_finishedByPassthrough()));
+		log_info("IN ws id=%s, %s", sock->rid().second.data(), requestUri.toEncoded().data());
 
-		ps->setDefaultSigKey(config.sigIss, config.sigKey);
-		ps->setDefaultUpstreamKey(config.upstreamKey);
-		ps->setUseXForwardedProtocol(config.useXForwardedProtocol);
-		ps->setXffRules(config.xffUntrustedRule, config.xffTrustedRule);
-		ps->setOrigHeadersNeedMark(config.origHeadersNeedMark);
+		bool isSecure = (requestUri.scheme() == "wss");
+		QString host = requestUri.host();
 
-		WsProxyItem *i = new WsProxyItem;
-		i->ps = ps;
-		wsProxyItemsBySession.insert(i->ps, i);
+		// look up the route
+		DomainMap::Entry route = domainMap->entry(DomainMap::WebSocket, isSecure, host, requestUri.encodedPath());
 
-		ps->start(sock);
-
-		if(stats)
+		// before we do anything else, see if this is a sockjs request
+		if(!route.isNull() && !route.sockJsPath.isEmpty() && requestUri.encodedPath().startsWith(route.sockJsPath))
 		{
-			stats->addConnection(ridToString(sock->rid()), ps->routeId(), StatsManager::WebSocket, sock->peerAddress(), sock->requestUri().scheme() == "wss", false);
-			stats->addActivity(ps->routeId());
+			sockJsManager->giveSocket(sock, route.sockJsPath.length(), route.sockJsAsPath, route);
+			return;
 		}
+
+		log_debug("creating wsproxysession for zws id=%s", sock->rid().second.data());
+		doProxySocket(sock, route);
+	}
+
+	void tryTakeSockJsSession()
+	{
+		if(!canTake())
+			return;
+
+		SockJsSession *sock = sockJsManager->takeNext();
+		if(!sock)
+			return;
+
+		log_info("IN sockjs obj=%p %s", sock, sock->requestUri().toEncoded().data());
+
+		log_debug("creating wsproxysession for sockjs=%p", sock);
+		doProxySocket(sock, sock->route());
 	}
 
 	void tryTakeNext()
 	{
 		tryTakeRequest();
 		tryTakeSocket();
+		tryTakeSockJsSession();
 	}
 
 private slots:
-	void zhttp_requestReady()
+	void zhttpIn_requestReady()
 	{
 		tryTakeNext();
 	}
 
-	void zhttp_socketReady()
+	void zhttpIn_socketReady()
+	{
+		tryTakeNext();
+	}
+
+	void sockjs_sessionReady()
 	{
 		tryTakeNext();
 	}
@@ -437,7 +489,7 @@ private slots:
 		RequestSession *rs = (RequestSession *)sender();
 
 		// if we get here, then the request must be proxied. if it was to be directly
-		//   accepted, then finishedForAccept would have been emitted instead
+		//   accepted, then finishedByAccept would have been emitted instead
 		assert(idata.doProxy);
 
 		doProxy(rs, &idata);
@@ -464,15 +516,9 @@ private slots:
 		tryTakeNext();
 	}
 
-	void rs_finishedForAccept(const AcceptData &adata)
+	void rs_finishedByAccept()
 	{
 		RequestSession *rs = (RequestSession *)sender();
-
-		if(!handler_accept_out_sock->canWriteImmediately())
-		{
-			rs->respondCannotAccept();
-			return;
-		}
 
 		if(stats)
 		{
@@ -486,8 +532,6 @@ private slots:
 
 		requestSessions.remove(rs);
 		delete rs;
-
-		sendAccept(adata);
 
 		tryTakeNext();
 	}
@@ -507,7 +551,7 @@ private slots:
 		}
 	}
 
-	void ps_finishedByPassthrough()
+	void ps_finished()
 	{
 		ProxySession *ps = (ProxySession *)sender();
 
@@ -518,34 +562,6 @@ private slots:
 			proxyItemsByKey.remove(i->key);
 		proxyItemsBySession.remove(i->ps);
 		delete i;
-		delete ps;
-
-		tryTakeNext();
-	}
-
-	void ps_finishedForAccept(const AcceptData &adata)
-	{
-		ProxySession *ps = (ProxySession *)sender();
-
-		if(!handler_accept_out_sock->canWriteImmediately())
-		{
-			ps->cannotAccept();
-			return;
-		}
-
-		ProxyItem *i = proxyItemsBySession.value(ps);
-		assert(i);
-
-		if(i->shared)
-			proxyItemsByKey.remove(i->key);
-		proxyItemsBySession.remove(i->ps);
-		delete i;
-
-		// accept from ProxySession always has a response
-		assert(adata.haveResponse);
-
-		sendAccept(adata);
-
 		delete ps;
 
 		tryTakeNext();
@@ -569,7 +585,7 @@ private slots:
 		assert(i);
 
 		if(stats)
-			stats->removeConnection(ridToString(ps->rid()), false);
+			stats->removeConnection(ps->cid(), false);
 
 		wsProxyItemsBySession.remove(i->ps);
 		delete i;
@@ -594,6 +610,9 @@ private slots:
 			return;
 		}
 
+		if(log_outputLevel() >= LOG_LEVEL_DEBUG)
+			log_debug("retry: IN %s", qPrintable(TnetString::variantToString(data, -1)));
+
 		RetryRequestPacket p;
 		if(!p.fromVariant(data))
 		{
@@ -601,7 +620,7 @@ private slots:
 			return;
 		}
 
-		log_info("retry: IN %s %s", qPrintable(p.requestData.method), p.requestData.uri.toEncoded().data());
+		log_info("IN (retry) %s %s", qPrintable(p.requestData.method), p.requestData.uri.toEncoded().data());
 
 		InspectData idata;
 		if(p.haveInspectInfo)
@@ -621,34 +640,29 @@ private slots:
 			if(req.https)
 				ss.requestUri.setScheme("https");
 			ss.requestHeaders = p.requestData.headers;
+			ss.requestBody = p.requestData.body;
 			ss.inSeq = req.inSeq;
 			ss.outSeq = req.outSeq;
 			ss.outCredits = req.outCredits;
 			ss.userData = req.userData;
 
-			ZhttpRequest *zhttpRequest = zhttp->createRequestFromState(ss);
+			ZhttpRequest *zhttpRequest = zhttpIn->createRequestFromState(ss);
 
-			RequestSession *rs = new RequestSession(inspect, inspectChecker, this);
-			rs->startRetry(zhttpRequest, req.autoCrossOrigin, req.jsonpCallback);
-
+			RequestSession *rs = new RequestSession(domainMap, sockJsManager, inspect, inspectChecker, accept, this);
 			requestSessions += rs;
 
 			// note: if the routing table was changed, there's a chance the request
 			//   might get a different route id this time around. this could confuse
 			//   stats processors tracking route+connection mappings.
+			rs->startRetry(zhttpRequest, req.autoCrossOrigin, req.jsonpCallback, req.jsonpExtendedResponse);
 
 			doProxy(rs, p.haveInspectInfo ? &idata : 0, true);
 		}
 	}
 
-	void handler_accept_out_messagesWritten(int count)
+	void command_requestReady()
 	{
-		Q_UNUSED(count);
-	}
-
-	void rpc_requestReady()
-	{
-		ZrpcRequest *req = rpc->takeNext();
+		ZrpcRequest *req = command->takeNext();
 		if(req->method() == "conncheck")
 		{
 			if(!stats)
@@ -702,6 +716,12 @@ private slots:
 		}
 
 		delete req;
+	}
+
+	void domainMap_changed()
+	{
+		// connect to new zhttp targets, disconnect from old
+		zroutes->setup(domainMap->zhttpRoutes());
 	}
 };
 

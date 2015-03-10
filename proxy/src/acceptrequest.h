@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2013 Fanout, Inc.
+ * Copyright (C) 2015 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -17,30 +17,42 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef INSPECTCHECKER_H
-#define INSPECTCHECKER_H
+#ifndef ACCEPTREQUEST_H
+#define ACCEPTREQUEST_H
 
 #include <QObject>
+#include "packet/httpresponsedata.h"
+#include "zrpcrequest.h"
 
-class InspectRequest;
+class AcceptData;
+class ZrpcManager;
 
-// all inspect requests should be passed to this class for monitoring. use
-//   watch() to have it monitor a request, but not own it. use give() to have
-//   this class take ownership of an already-watched request.
-
-class InspectChecker : public QObject
+class AcceptRequest : public ZrpcRequest
 {
 	Q_OBJECT
 
 public:
-	InspectChecker(QObject *parent = 0);
-	~InspectChecker();
+	class ResponseData
+	{
+	public:
+		bool accepted;
+		HttpResponseData response;
 
-	bool isInterfaceAvailable() const;
-	void setInterfaceAvailable(bool available);
+		ResponseData() :
+			accepted(false)
+		{
+		}
+	};
 
-	void watch(InspectRequest *req);
-	void give(InspectRequest *req);
+	AcceptRequest(ZrpcManager *manager, QObject *parent = 0);
+	~AcceptRequest();
+
+	ResponseData result() const;
+
+	void start(const AcceptData &adata);
+
+protected:
+	virtual void onSuccess();
 
 private:
 	class Private;

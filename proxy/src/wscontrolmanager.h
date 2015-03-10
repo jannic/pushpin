@@ -33,10 +33,12 @@ public:
 	WsControlManager(QObject *parent = 0);
 	~WsControlManager();
 
+	void setIpcFileMode(int mode);
+
 	bool setInSpec(const QString &spec);
 	bool setOutSpec(const QString &spec);
 
-	WsControlSession *createSession();
+	WsControlSession *createSession(const QByteArray &cid);
 
 private:
 	class Private;

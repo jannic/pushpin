@@ -23,7 +23,6 @@
 #include <QVariant>
 #include <QHostAddress>
 #include "httprequestdata.h"
-#include "inspectresponsepacket.h"
 
 class RetryRequestPacket
 {
@@ -38,6 +37,7 @@ public:
 		QHostAddress peerAddress;
 		bool autoCrossOrigin;
 		QByteArray jsonpCallback;
+		bool jsonpExtendedResponse;
 
 		// zhttp
 		int inSeq;
@@ -48,6 +48,7 @@ public:
 		Request() :
 			https(false),
 			autoCrossOrigin(false),
+			jsonpExtendedResponse(false),
 			inSeq(-1),
 			outSeq(-1),
 			outCredits(-1)
@@ -55,11 +56,19 @@ public:
 		}
 	};
 
+	class InspectInfo
+	{
+	public:
+		bool noProxy;
+		QByteArray sharingKey;
+		QVariant userData;
+	};
+
 	QList<Request> requests;
 	HttpRequestData requestData;
 
 	bool haveInspectInfo;
-	InspectResponsePacket inspectInfo;
+	InspectInfo inspectInfo;
 
 	RetryRequestPacket();
 

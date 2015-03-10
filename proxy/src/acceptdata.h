@@ -38,6 +38,7 @@ public:
 		QHostAddress peerAddress;
 		bool autoCrossOrigin;
 		QByteArray jsonpCallback;
+		bool jsonpExtendedResponse;
 
 		// zhttp
 		int inSeq;
@@ -48,6 +49,7 @@ public:
 		Request() :
 			https(false),
 			autoCrossOrigin(false),
+			jsonpExtendedResponse(false),
 			inSeq(-1),
 			outSeq(-1),
 			outCredits(-1)
@@ -66,10 +68,12 @@ public:
 
 	QByteArray route;
 	QByteArray channelPrefix;
+	bool useSession;
 
 	AcceptData() :
 		haveInspectData(false),
-		haveResponse(false)
+		haveResponse(false),
+		useSession(false)
 	{
 	}
 };

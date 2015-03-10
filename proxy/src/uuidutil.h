@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2013 Fanout, Inc.
+ * Copyright (C) 2014 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -17,37 +17,15 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef INSPECTMANAGER_H
-#define INSPECTMANAGER_H
+#ifndef UUIDUTIL_H
+#define UUIDUTIL_H
 
-#include <QObject>
+class QByteArray;
 
-class InspectRequestPacket;
-class InspectRequest;
+namespace UuidUtil {
 
-class InspectManager : public QObject
-{
-	Q_OBJECT
+QByteArray createUuid();
 
-public:
-	InspectManager(QObject *parent = 0);
-	~InspectManager();
-
-	int timeout() const;
-
-	bool setSpec(const QString &spec);
-	void setTimeout(int ms);
-
-	InspectRequest *createRequest();
-
-private:
-	class Private;
-	Private *d;
-
-	friend class InspectRequest;
-	bool canWriteImmediately() const;
-	void write(const InspectRequestPacket &packet);
-	void unlink(InspectRequest *req);
-};
+}
 
 #endif

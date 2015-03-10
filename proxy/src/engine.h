@@ -40,12 +40,13 @@ public:
 		QStringList clientOutStreamSpecs;
 		QStringList clientInSpecs;
 		QString inspectSpec;
+		QString acceptSpec;
 		QString retryInSpec;
-		QString acceptOutSpec;
 		QString wsControlInSpec;
 		QString wsControlOutSpec;
 		QString statsSpec;
 		QString commandSpec;
+		int ipcFileMode;
 		int maxWorkers;
 		int inspectTimeout;
 		QString routesFile;
@@ -57,8 +58,10 @@ public:
 		QByteArray sigIss;
 		QByteArray sigKey;
 		QByteArray upstreamKey;
+		QString sockJsUrl;
 
 		Configuration() :
+			ipcFileMode(-1),
 			maxWorkers(-1),
 			inspectTimeout(8000),
 			autoCrossOrigin(false),
