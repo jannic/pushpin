@@ -1,9 +1,9 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: pushpin
-Source: http://packages.fanout.io/source/pushpin-1.0.0.tar.bz2
+Source: http://packages.fanout.io/source/pushpin-1.1.0.tar.bz2
 
 Files: *
-Copyright: 2012-2014 Fanout, Inc.
+Copyright: 2012-2015 Fanout, Inc.
 License: AGPL-3+
 
 Files: common/*
@@ -36,7 +36,7 @@ Copyright: 2012 Justin Karneges
 License: Expat
 
 Files: debian/*
-Copyright: 2013 Jan Niehusmann <jan@debian.org>
+Copyright: 2013-2015 Jan Niehusmann <jan@debian.org>
 License: Expat
 
 License: AGPL-3+
