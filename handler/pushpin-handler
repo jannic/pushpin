@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Copyright (C) 2012-2014 Fanout, Inc.
+# Copyright (C) 2012-2015 Fanout, Inc.
 #
 # This file is part of Pushpin.
 #
@@ -21,7 +21,7 @@ import sys
 import os
 import ConfigParser
 
-version = '1.1.0'
+version = '1.2.0'
 
 config_file = "/etc/pushpin/pushpin.conf"
 log_file = None
@@ -180,7 +180,10 @@ ctx = zmq.Context()
 
 class Hold(object):
 	def __init__(self, rid, request, mode, response, auto_cross_origin, jsonp_callback):
+		self.lock = threading.Lock()
 		self.rid = rid
+		self.out_seq = None # need to lock hold
+		self.out_credits = 0 # need to lock hold
 		self.request = request
 		self.mode = mode
 		self.response = response
@@ -189,6 +192,9 @@ class Hold(object):
 		self.jsonp_extended_response = False
 		self.expire_time = None
 		self.last_keepalive = None
+		self.grip_keep_alive = None
+		self.grip_keep_alive_timeout = None
+		self.last_send = None
 
 class WsSession(object):
 	def __init__(self, cid):
@@ -269,6 +275,10 @@ def remove_from_req_channels(rid, response=True, stream=True):
 # assumes state is locked
 def remove_from_response_channels(rid):
 	remove_from_req_channels(rid, response=True, stream=False)
+
+# assumes state is locked
+def remove_from_stream_channels(rid):
+	remove_from_req_channels(rid, response=False, stream=True)
 
 def headernames_contains(headers, name):
 	lname = name.lower()
@@ -474,6 +484,17 @@ def reply_http_chunk(sock, rid, content, seq=None):
 		out["seq"] = seq
 	out["body"] = content
 	out["more"] = True
+
+	m_raw = rid[0] + " T" + tnetstring.dumps(out)
+	logger.debug("OUT publish: %s" % m_raw)
+	sock.send(m_raw)
+
+def reply_http_close(sock, rid, seq=None):
+	out = dict()
+	out["from"] = instance_id
+	out["id"] = rid[1]
+	if seq is not None:
+		out["seq"] = seq
 
 	m_raw = rid[0] + " T" + tnetstring.dumps(out)
 	logger.debug("OUT publish: %s" % m_raw)
@@ -846,6 +867,31 @@ def accept_worker():
 			if grip_timeout:
 				timeout = int(grip_timeout[0])
 			grip_expose_headers = header_get_all(resp_headers, 'Grip-Expose-Headers')
+			grip_keep_alive = header_get_parsed(resp_headers, 'Grip-Keep-Alive')
+			keep_alive = None
+			keep_alive_timeout = None
+			if grip_keep_alive:
+				val = grip_keep_alive[0]
+				params = grip_keep_alive[1]
+				t = params.get('timeout')
+				f = params.get('format')
+				if f is None:
+					f = 'raw'
+				if f == 'cstring':
+					keep_alive = val.decode('string_escape')
+				elif f == 'base64':
+					keep_alive = b64decode(val)
+				elif f == 'raw':
+					keep_alive = val
+				else:
+					raise ValueError('invalid keep alive format')
+				if t is not None:
+					keep_alive_timeout = int(t)
+					if keep_alive_timeout < 1:
+						keep_alive = None
+						keep_alive_timeout = None
+				else:
+					keep_alive_timeout = 55
 
 			instruct = None
 			ctype = header_get_parsed(resp_headers, 'Content-Type')
@@ -863,6 +909,13 @@ def accept_worker():
 					channels.append((name, prev_id))
 				if 'timeout' in hold:
 					timeout = int(hold['timeout'])
+				if 'keep-alive' in hold:
+					ka = hold['keep-alive']
+					if 'content-bin' in ka:
+						keep_alive = b64decode(ka['content-bin'])
+					else:
+						keep_alive = ka['content'].encode('utf-8')
+					keep_alive_timeout = int(ka['timeout'])
 				response = instruct.get('response')
 				if response is None:
 					response = dict()
@@ -928,6 +981,9 @@ def accept_worker():
 			h.out_seq = req["out-seq"]
 			h.out_credits = req["out-credits"]
 			h.jsonp_extended_response = req.get("jsonp-extended-response", False)
+			h.grip_keep_alive = keep_alive
+			h.grip_keep_alive_timeout = keep_alive_timeout
+			h.last_send = now
 
 			notify_sub = False
 			if mode == "response":
@@ -1009,12 +1065,14 @@ def accept_worker():
 				if h.auto_cross_origin:
 					apply_cors_headers(h.request["headers"], rheaders)
 
+				h.lock.acquire()
 				body_size = reply_http(out_sock, rid, rcode, rreason, rheaders, response.get("body"), True, h.out_seq)
+				h.out_credits -= body_size
+				h.out_seq += 1
+				h.lock.release()
 
 				# bind channels
 				lock.acquire()
-				h.out_credits -= body_size
-				h.out_seq += 1
 				for channel, prev_id in channels:
 					logger.debug("adding stream hold on %s" % channel)
 					hchannel = stream_channels.get(channel)
@@ -1214,6 +1272,7 @@ def push_in_worker(c):
 		stream_holds = list()
 		ws_cids = list()
 		sids = set()
+		notify_unsubs = set()
 
 		if "http-response" in formats:
 			lock.acquire()
@@ -1222,8 +1281,6 @@ def push_in_worker(c):
 				response_holds = hchannel.values()
 				del response_channels[channel]
 				for h in response_holds:
-					req_channels = channels_by_req[h.rid]
-					req_channels.remove(('response', channel))
 					remove_from_response_channels(h.rid)
 			sub_key = ('response', channel)
 			sub = subs.get(sub_key)
@@ -1242,11 +1299,21 @@ def push_in_worker(c):
 			stats_lock.release()
 
 		if "http-stream" in formats:
-			# TODO: support close action and report immediate unsubscribe via stats
+			do_close = (formats["http-stream"].get("action") == "close")
+
 			lock.acquire()
 			hchannel = stream_channels.get(channel)
 			if hchannel:
 				stream_holds = hchannel.values()
+				if do_close:
+					del stream_channels[channel]
+					for h in stream_holds:
+						remove_from_stream_channels(h.rid)
+					sub_key = ('stream', channel)
+					sub = subs.get(sub_key)
+					if sub:
+						del subs[sub_key]
+						notify_unsubs.add(sub_key)
 			lock.release()
 			stats_lock.acquire()
 			for h in stream_holds:
@@ -1407,18 +1474,24 @@ def push_in_worker(c):
 				stats_sock.send('message ' + tnetstring.dumps(out))
 
 		if stream_holds:
-			logger.debug("relaying to %d http-stream subscribers" % len(stream_holds))
-			for h in stream_holds:
-				content = formats["http-stream"]["content"]
-				if content:
-					if h.out_credits < len(content):
-						logger.debug('not enough send credits, dropping')
-						continue
-					reply_http_chunk(out_sock, h.rid, content, h.out_seq)
-					lock.acquire()
-					h.out_credits -= len(content)
-					h.out_seq += 1
-					lock.release()
+			content = formats["http-stream"].get("content")
+			if content or do_close:
+				logger.debug("relaying to %d http-stream subscribers" % len(stream_holds))
+				for h in stream_holds:
+					if content:
+						if h.out_credits < len(content):
+							logger.debug('not enough send credits, dropping')
+							continue
+						h.lock.acquire()
+						reply_http_chunk(out_sock, h.rid, content, h.out_seq)
+						h.out_credits -= len(content)
+						h.out_seq += 1
+						h.lock.release()
+						lock.acquire()
+						h.last_send = int(time.time())
+						lock.release()
+					if do_close:
+						reply_http_close(out_sock, h.rid)
 			rcount = len(stream_holds)
 			if rcount > 0:
 				out = dict()
@@ -1463,6 +1536,14 @@ def push_in_worker(c):
 				out['count'] = rcount
 				out['transport'] = 'ws-message'
 				stats_sock.send('message ' + tnetstring.dumps(out))
+
+		for sub_key in notify_unsubs:
+			out = dict()
+			out['from'] = instance_id
+			out['mode'] = ensure_utf8(sub_key[0])
+			out['channel'] = ensure_utf8(sub_key[1])
+			out['unavailable'] = True
+			stats_sock.send('sub ' + tnetstring.dumps(out))
 
 	in_sock.close()
 
@@ -1860,25 +1941,45 @@ def timeout_worker():
 					stats_sock.send('conn ' + tnetstring.dumps(out))
 
 		now = int(time.time())
-		rids = set()
+		grip_ka_rids = dict() # (hold, content)
+		ka_rids = set()
 		lock.acquire()
 		for channel, hchannels in response_channels.iteritems():
 			for h in hchannels.values():
 				if h.last_keepalive is None or h.last_keepalive + 30 < now:
-					if h.rid not in rids:
+					if h.rid not in ka_rids:
 						h.last_keepalive = now
-						rids.add(h.rid)
+						ka_rids.add(h.rid)
 		for channel, hchannels in stream_channels.iteritems():
 			for h in hchannels.values():
-				if h.last_keepalive is None or h.last_keepalive + 30 < now:
-					if h.rid not in rids:
+				if h.grip_keep_alive and (h.last_send is None or h.last_send + h.grip_keep_alive_timeout < now):
+					if h.rid not in grip_ka_rids:
+						content = h.grip_keep_alive
+						if h.out_credits < len(content):
+							logger.debug('not enough send credits, skipping keep alive')
+							continue
+						h.last_send = now
 						h.last_keepalive = now
-						rids.add(h.rid)
+						grip_ka_rids[h.rid] = (h, content)
+				if h.last_keepalive is None or h.last_keepalive + 30 < now:
+					if h.rid not in grip_ka_rids and h.rid not in ka_rids:
+						h.last_keepalive = now
+						ka_rids.add(h.rid)
 		lock.release()
 
-		if len(rids) > 0:
-			logger.debug("keep-aliving %d subscribers" % len(rids))
-			for rid in rids:
+		if len(grip_ka_rids) > 0:
+			logger.debug("keep-aliving (grip) %d subscribers" % len(grip_ka_rids))
+			for rid, v in grip_ka_rids.iteritems():
+				h, content = v
+				h.lock.acquire()
+				reply_http_chunk(out_sock, rid, content, h.out_seq)
+				h.out_credits -= len(content)
+				h.out_seq += 1
+				h.lock.release()
+
+		if len(ka_rids) > 0:
+			logger.debug("keep-aliving %d subscribers" % len(ka_rids))
+			for rid in ka_rids:
 				out = dict()
 				out['from'] = instance_id
 				out['id'] = rid[1]
@@ -2028,6 +2129,15 @@ def command_handler(method, args, data):
 			cids.remove(cid)
 
 		return list(cids)
+	elif method == 'get-zmq-uris':
+		out = dict()
+		if command_spec:
+			out['command'] = command_spec
+		if push_in_spec:
+			out['publish-pull'] = push_in_spec
+		if push_in_sub_spec:
+			out['publish-sub'] = push_in_sub_spec
+		return out
 	else:
 		raise rpc.CallError('method-not-found')
 
