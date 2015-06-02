@@ -19,3 +19,6 @@ export Q_CPPFLAGS Q_CFLAGS Q_CXXFLAGS Q_LDFLAGS
 override_dh_auto_install:
 	dh_auto_install
 	mkdir -p debian/pushpin/var/log/pushpin
+
+get-orig-source:
+	uscan --verbose --force-download --rename --repack --compression xz
