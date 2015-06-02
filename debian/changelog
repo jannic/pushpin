@@ -4,6 +4,7 @@ pushpin (1.2.0-1) UNRELEASED; urgency=medium
   * Add get-orig-source target to debian/rules
   * Add Files-Excluded header to debian/copyright
   * Add watch file
+  * Set updates_check to false, by default
 
  -- Jan Niehusmann <jan@debian.org>  Tue, 02 Jun 2015 13:56:44 +0200
 

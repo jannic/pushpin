@@ -274,7 +274,7 @@ public:
 		QByteArray sigKey = parse_key(settings.value("proxy/sig_key").toString());
 		QByteArray upstreamKey = parse_key(settings.value("proxy/upstream_key").toString());
 		QString sockJsUrl = settings.value("proxy/sockjs_url").toString();
-		bool updatesCheck = settings.value("proxy/updates_check", true).toBool();
+		bool updatesCheck = settings.value("proxy/updates_check", false).toBool();
 
 		QList<QByteArray> origHeadersNeedMark;
 		foreach(const QString &s, origHeadersNeedMarkStr)
