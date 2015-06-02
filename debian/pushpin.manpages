@@ -2,3 +2,4 @@ debian/m2adapter.1
 debian/pushpin-handler.1
 debian/pushpin-proxy.1
 debian/pushpin.1
+debian/pushpin-publish.1
