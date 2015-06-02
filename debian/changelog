@@ -1,3 +1,12 @@
+pushpin (1.2.0-1) UNRELEASED; urgency=medium
+
+  * Merge upstream version 1.2.0
+  * Add get-orig-source target to debian/rules
+  * Add Files-Excluded header to debian/copyright
+  * Add watch file
+
+ -- Jan Niehusmann <jan@debian.org>  Tue, 02 Jun 2015 13:56:44 +0200
+
 pushpin (1.1.0-1) unstable; urgency=low
 
   * Set standards-version to 3.9.6 (no changes)
