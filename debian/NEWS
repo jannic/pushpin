@@ -1,0 +1,12 @@
+pushpin (1.2.0-1) unstable; urgency=medium
+
+  Pushpin 1.2.0 contains a new feature which checks for updates daily
+  and reports new versions to the logfile.
+
+  Upstream enables this feature by default, but in Debian, it's disabled
+  for privacy reasons.
+
+  You can enable the feature in /etc/pushpin/pushpin.conf by
+  setting updates_check=true
+
+ -- Jan Niehusmann <jan@debian.org>  Thu, 04 Jun 2015 20:27:44 +0200
