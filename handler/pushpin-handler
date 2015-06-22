@@ -21,7 +21,7 @@ import sys
 import os
 import ConfigParser
 
-version = '1.3.0'
+version = '1.3.1'
 
 config_file = "/etc/pushpin/pushpin.conf"
 log_file = None
@@ -1306,15 +1306,15 @@ def push_in_worker(c):
 					unsub_list = remove_from_response_channels(h.rid)
 					for sub_key in unsub_list:
 						unsubs.add(sub_key)
-				assert('channel' not in response_channels)
+				assert(channel not in response_channels)
 				for sub_key in unsubs:
 					sub = subs.get(sub_key)
 					if sub and sub.expire_time is None:
 						# flag for deletion soon
 						sub.expire_time = int(time.time()) + SUBSCRIPTION_LINGER
-				item_id = m.get("id")
-				if item_id is not None:
-					response_lastids[channel] = item_id
+			item_id = m.get("id")
+			if item_id is not None:
+				response_lastids[channel] = item_id
 			lock.release()
 			stats_lock.acquire()
 			for h in response_holds:
@@ -1336,7 +1336,7 @@ def push_in_worker(c):
 						unsub_list = remove_from_stream_channels(h.rid)
 						for sub_key in unsub_list:
 							unsubs.add(sub_key)
-					assert('channel' not in stream_channels)
+					assert(channel not in stream_channels)
 					for sub_key in unsubs:
 						sub = subs.get(sub_key)
 						if sub:
@@ -2335,6 +2335,8 @@ def stats_worker(c):
 							sm = {'channel': sub.channel}
 							sm['type'] = 'unsubscribe'
 							sub_sock.send(tnetstring.dumps(sm))
+		except zmq.ContextTerminated:
+			raise
 		except:
 			logger.exception('failed')
 
