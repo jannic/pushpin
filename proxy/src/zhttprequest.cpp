@@ -602,6 +602,8 @@ public:
 
 		if(packet.type == ZhttpResponsePacket::Data)
 		{
+			bool needToSendHeaders = false;
+
 			if(!haveResponseValues)
 			{
 				haveResponseValues = true;
@@ -609,6 +611,8 @@ public:
 				responseCode = packet.code;
 				responseReason = packet.reason;
 				responseHeaders = packet.headers;
+
+				needToSendHeaders = true;
 			}
 
 			if(doReq)
@@ -639,7 +643,7 @@ public:
 
 			if(packet.more)
 			{
-				if(!packet.body.isEmpty())
+				if(needToSendHeaders || !packet.body.isEmpty())
 					emit q->readyRead();
 			}
 			else
@@ -842,6 +846,8 @@ public slots:
 					writePacket(p);
 
 					state = ClientRequestFinishWait;
+
+					emit q->bytesWritten(p.body.size());
 				}
 			}
 			else
@@ -885,6 +891,11 @@ public slots:
 					state = ClientRequestStartWait;
 				else
 					state = ClientRequestFinishWait;
+
+				if(!p.body.isEmpty())
+					emit q->bytesWritten(p.body.size());
+				else if(!p.more)
+					emit q->bytesWritten(0);
 			}
 		}
 		else if(state == ClientRequesting)

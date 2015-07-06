@@ -36,7 +36,7 @@
 #include "log.h"
 #include "layertracker.h"
 
-#define VERSION "1.3.1"
+#define VERSION "1.3.3"
 
 #define DEFAULT_HWM 51000
 #define EXPIRE_INTERVAL 1000
@@ -230,6 +230,8 @@ public:
 		QByteArray acceptToken; // for websocket
 		bool downClosed; // for websocket
 		bool upClosed; // for websockets
+		QString method;
+		bool responseHeadersOnly; // HEAD, 204, 304
 
 		// m2 stuff
 		M2Connection *conn;
@@ -256,6 +258,7 @@ public:
 			lastActive(-1),
 			downClosed(false),
 			upClosed(false),
+			responseHeadersOnly(false),
 			persistent(false),
 			allowChunked(false),
 			respondKeepAlive(false),
@@ -715,6 +718,14 @@ public:
 		delete s;
 	}
 
+	void destroySessionAndErrorConnection(Session *s)
+	{
+		M2Connection *conn = s->conn;
+		destroySession(s);
+		if(conn)
+			m2_writeErrorClose(conn);
+	}
+
 	void m2_out_write(const M2ResponsePacket &packet)
 	{
 		QByteArray buf = packet.toByteArray();
@@ -1133,7 +1144,7 @@ public:
 				if(zresp.from.isEmpty())
 				{
 					log_warning("%s: received first response of sequence with no from address, canceling", logprefix);
-					destroySession(s);
+					destroySessionAndErrorConnection(s);
 					return;
 				}
 
@@ -1145,7 +1156,7 @@ public:
 					ZhttpRequestPacket zreq;
 					zreq.type = ZhttpRequestPacket::Cancel;
 					zhttp_out_write(s, zreq);
-					destroySession(s);
+					destroySessionAndErrorConnection(s);
 					return;
 				}
 			}
@@ -1167,7 +1178,7 @@ public:
 						zhttp_out_write(s, zreq);
 					}
 
-					destroySession(s);
+					destroySessionAndErrorConnection(s);
 					return;
 				}
 			}
@@ -1180,7 +1191,7 @@ public:
 				ZhttpRequestPacket zreq;
 				zreq.type = ZhttpRequestPacket::Cancel;
 				zhttp_out_write(s, zreq);
-				destroySession(s);
+				destroySessionAndErrorConnection(s);
 				return;
 			}
 
@@ -1323,6 +1334,9 @@ public:
 							}
 						}
 
+						if(s->method == "HEAD" || (zresp.code == 204 || zresp.code == 304))
+							s->responseHeadersOnly = true;
+
 						HttpHeaders headers = zresp.headers;
 						QList<QByteArray> connHeaders = headers.takeAll("Connection");
 						foreach(const QByteArray &h, connHeaders)
@@ -1336,14 +1350,17 @@ public:
 						if(s->respondClose)
 							connHeaders += "close";
 
-						if(s->chunked)
+						if(!s->responseHeadersOnly)
 						{
-							connHeaders += "Transfer-Encoding";
-							headers += HttpHeader("Transfer-Encoding", "chunked");
-						}
-						else if(!zresp.more && !headers.contains("Content-Length"))
-						{
-							headers += HttpHeader("Content-Length", QByteArray::number(zresp.body.size()));
+							if(s->chunked)
+							{
+								connHeaders += "Transfer-Encoding";
+								headers += HttpHeader("Transfer-Encoding", "chunked");
+							}
+							else if(!zresp.more && !headers.contains("Content-Length"))
+							{
+								headers += HttpHeader("Content-Length", QByteArray::number(zresp.body.size()));
+							}
 						}
 
 						if(!connHeaders.isEmpty())
@@ -1354,6 +1371,29 @@ public:
 
 					if(!zresp.body.isEmpty())
 					{
+						if(s->responseHeadersOnly)
+						{
+							log_warning("%s: received unexpected response body. sending headers only", logprefix);
+
+							bool persistent = s->persistent;
+
+							// send just the headers
+							M2Connection *conn = s->conn;
+							m2_writeOrQueueData(s->conn, mresp, 0);
+
+							// cancel and destroy session
+							if(!s->zhttpAddress.isEmpty())
+							{
+								ZhttpRequestPacket zreq;
+								zreq.type = ZhttpRequestPacket::Cancel;
+								zhttp_out_write(s, zreq);
+							}
+							destroySession(s);
+							if(!persistent)
+								m2_writeClose(conn);
+							return;
+						}
+
 						if(s->chunked)
 						{
 							QByteArray chunkHeader = makeChunkHeader(zresp.body.size());
@@ -1491,11 +1531,7 @@ public:
 				m2_writeClose(conn);
 			}
 			else
-			{
-				M2Connection *conn = s->conn;
-				destroySession(s);
-				m2_writeErrorClose(conn);
-			}
+				destroySessionAndErrorConnection(s);
 		}
 		else if(zresp.type == ZhttpResponsePacket::Credit)
 		{
@@ -1512,9 +1548,7 @@ public:
 		}
 		else if(zresp.type == ZhttpResponsePacket::Cancel)
 		{
-			M2Connection *conn = s->conn;
-			destroySession(s);
-			m2_writeErrorClose(conn);
+			destroySessionAndErrorConnection(s);
 		}
 		else if(zresp.type == ZhttpResponsePacket::HandoffStart)
 		{
@@ -1607,14 +1641,20 @@ private slots:
 
 		Rid m2Rid(mreq.sender, mreq.id);
 
-		Session *s = 0;
-
 		M2Connection *conn = m2ConnectionsByRid.value(m2Rid);
 		if(!conn)
 		{
+			if(mreq.version.isEmpty())
+			{
+				log_error("m2: id=%s no version on initial packet", mreq.id.data());
+				m2_writeCtlCancel(mreq.sender, mreq.id);
+				return;
+			}
+
 			if(mreq.version != "HTTP/1.0" && mreq.version != "HTTP/1.1")
 			{
-				log_error("m2: id=%s skipping unknown version: %s", mreq.id.data(), mreq.version.data());
+				log_error("m2: id=%s unknown version: %s", mreq.id.data(), mreq.version.data());
+				m2_writeCtlCancel(mreq.sender, mreq.id);
 				return;
 			}
 
@@ -1631,13 +1671,6 @@ private slots:
 			if(index == -1)
 			{
 				log_error("m2: id=%s unknown send_ident [%s]", mreq.id.data(), mreq.sender.data());
-				return;
-			}
-
-			if(mreq.type == M2RequestPacket::HttpRequest && mreq.uploadStreamOffset > 0)
-			{
-				log_warning("m2: id=%s stream offset > 0 but session unknown", mreq.id.data());
-				m2_writeCtlCancel(mreq.sender, mreq.id);
 				return;
 			}
 
@@ -1665,27 +1698,21 @@ private slots:
 
 			m2ConnectionsByRid.insert(m2Rid, conn);
 		}
-		else
-		{
-			s = sessionsByM2Rid.value(m2Rid);
-
-			if(mreq.type == M2RequestPacket::HttpRequest && !s && mreq.uploadStreamOffset > 0)
-			{
-				log_warning("m2: id=%s stream offset > 0 but session unknown", mreq.id.data());
-				endSession(s);
-				m2_writeCtlCancel(conn);
-				return;
-			}
-		}
-
-		// if we get here, then we have an m2 connection but may or may not have a session yet
 
 		bool requestBodyMore = false;
 		if(mreq.type == M2RequestPacket::HttpRequest && mreq.uploadStreamOffset >= 0 && !mreq.uploadStreamDone)
 			requestBodyMore = true;
 
+		Session *s = sessionsByM2Rid.value(m2Rid);
 		if(!s)
 		{
+			if(mreq.type == M2RequestPacket::HttpRequest && mreq.uploadStreamOffset > 0)
+			{
+				log_warning("m2: id=%s stream offset > 0 but session unknown", mreq.id.data());
+				m2_writeCtlCancel(conn);
+				return;
+			}
+
 			if(mreq.type != M2RequestPacket::HttpRequest && mreq.type != M2RequestPacket::WebSocketHandshake)
 			{
 				log_warning("m2: received unexpected starting packet type: %d", (int)mreq.type);
@@ -1745,6 +1772,7 @@ private slots:
 			s->conn->session = s;
 			s->lastActive = time.elapsed();
 			s->id = m2_send_idents[conn->identIndex] + '_' + conn->id;
+			s->method = mreq.method;
 
 			if(mreq.type == M2RequestPacket::HttpRequest)
 			{
@@ -1814,9 +1842,12 @@ private slots:
 		}
 		else
 		{
+			assert(s->conn == conn);
+
 			if(mreq.type != M2RequestPacket::HttpRequest && mreq.type != M2RequestPacket::WebSocketFrame)
 			{
 				log_warning("m2: received unexpected subsequent packet type: %d", (int)mreq.type);
+				endSession(s);
 				m2_writeCtlCancel(conn);
 				return;
 			}
@@ -1830,7 +1861,6 @@ private slots:
 				if(offset != s->readCount)
 				{
 					log_warning("m2: %s id=%s unexpected stream offset (got=%d, expected=%d)", m2_send_idents[s->conn->identIndex].data(), mreq.id.data(), offset, s->readCount);
-					M2Connection *conn = s->conn;
 					endSession(s);
 					m2_writeCtlCancel(conn);
 					return;
@@ -1845,7 +1875,6 @@ private slots:
 			if(s->zhttpAddress.isEmpty())
 			{
 				log_error("m2: %s id=%s multiple packets from m2 before response from zhttp", m2_send_idents[s->conn->identIndex].data(), mreq.id.data());
-				M2Connection *conn = s->conn;
 				endSession(s);
 				m2_writeCtlCancel(conn);
 				return;
@@ -1872,7 +1901,6 @@ private slots:
 				if(opcode != 1 && opcode != 2 && opcode != 8 && opcode != 9 && opcode != 10)
 				{
 					log_warning("m2: %s id=%s unsupported ws opcode: %d", m2_send_idents[s->conn->identIndex].data(), mreq.id.data(), opcode);
-					M2Connection *conn = s->conn;
 					endSession(s);
 					m2_writeCtlCancel(conn);
 					return;
@@ -1918,7 +1946,6 @@ private slots:
 
 					if(s->downClosed && s->upClosed)
 					{
-						M2Connection *conn = s->conn;
 						destroySession(s); // we aren't in handoff so this is safe
 						m2_writeClose(conn);
 					}
@@ -1998,10 +2025,7 @@ private slots:
 		foreach(Session *s, toDelete)
 		{
 			log_warning("timing out request %s", s->id.data());
-			M2Connection *conn = s->conn;
-			destroySession(s);
-			if(conn)
-				m2_writeErrorClose(conn);
+			destroySessionAndErrorConnection(s);
 		}
 	}
 
