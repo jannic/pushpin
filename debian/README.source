@@ -1,8 +1,9 @@
 pushpin for Debian
 ------------------
 
-Pushpin 1.1.0 was downloaded from http://packages.fanout.io/source/pushpin-1.1.0.tar.bz2
-on Mar 10, 2015.
+Pushpin orig tarball is created using
+uscan --repack --compression xz
 
-The file configure.exe was removed from the archive, as its source
-is not included.
+That command downloads the latest version from
+https://dl.bintray.com/fanout/source/pushpin-<VERSION>.tar.bz2 and removes
+the file configure.exe from the archive, as its source is not included.
