@@ -10,7 +10,7 @@ Vcs-Browser: http://anonscm.debian.org/gitweb/?p=users/jan/pushpin.git;a=summary
 
 Package: pushpin
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, mongrel2-core (>= 1.9.0), zurl (>= 1.3.0-2), python-zmq, python-setproctitle, python-jinja2, python, adduser, python-tnetstring, python-blist
+Depends: ${shlibs:Depends}, ${misc:Depends}, mongrel2-core (>= 1.9.0), zurl (>= 1.3.0-2), python-zmq, python-setproctitle, python-jinja2, python, adduser, python-tnetstring, python-sortedcontainers | python-blist
 Description: HTTP reverse proxy server for streaming and long-polling services
  Pushpin is an HTTP reverse proxy server that makes it easy to implement
  streaming and long-polling services. It communicates with backend web
