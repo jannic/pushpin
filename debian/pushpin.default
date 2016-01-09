@@ -7,7 +7,7 @@
 #
 
 # Additional options that are passed to the Daemon.
-DAEMON_OPTS=""
+DAEMON_ARGS=""
 
 # Set to 'yes' if pushpin should be started automatically.
 RUN=no
