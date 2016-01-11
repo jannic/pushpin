@@ -12,12 +12,16 @@ Package: pushpin
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, mongrel2-core (>= 1.9.0), zurl (>= 1.3.0-2), python-zmq, python-setproctitle, python-jinja2, python, adduser, python-tnetstring, python-sortedcontainers | python-blist
 Description: HTTP reverse proxy server for streaming and long-polling services
- Pushpin is an HTTP reverse proxy server that makes it easy to implement
- streaming and long-polling services. It communicates with backend web
- applications using regular, short-lived HTTP requests (GRIP protocol). This
- allows the backend applications to be written in any language and use any
- webserver.
+ Pushpin is a reverse proxy server that makes it easy to implement
+ WebSocket, HTTP streaming, and HTTP long-polling services. It communicates
+ with backend web applications using regular, short-lived HTTP requests
+ (GRIP protocol). This allows backend applications to be written in any
+ language and use any webserver.
  .
- Additionally, Pushpin does all of this without exposing a proprietary protocol
- to clients. The HTTP content between the client and your server is whatever
- you want it to be. This makes it ideal for implementing APIs.
+ Additionally, Pushpin does all of this without exposing a proprietary
+ protocol to clients. The HTTP/WebSocket content between the client
+ and your server is whatever you want it to be. This makes it ideal for
+ implementing APIs.
+ .
+ Pushpin is written in C++. The name means to "pin" (hold) connections
+ open for "pushing".
