@@ -1,8 +1,9 @@
-pushpin (1.6.0-2) UNRELEASED; urgency=medium
+pushpin (1.7.0-1) UNRELEASED; urgency=medium
 
+  * New upstream version
   * fix /etc/default/pushpin, use DAEMON_ARGS instead of DAEMON_OPTS
 
- -- Jan Niehusmann <jan@debian.org>  Sat, 09 Jan 2016 23:24:21 +0100
+ -- Jan Niehusmann <jan@debian.org>  Mon, 11 Jan 2016 23:59:35 +0100
 
 pushpin (1.6.0-1) unstable; urgency=medium
 
