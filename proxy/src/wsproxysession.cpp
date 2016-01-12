@@ -166,41 +166,45 @@ static QHash<QByteArray, QByteArray> parseParams(const QByteArray &in, bool *ok 
 	return out;
 }
 
-static HttpExtension getExtension(const QList<QByteArray> &extStrings, const QByteArray &name)
+static QByteArray getExtensionRaw(const QList<QByteArray> &extStrings, const QByteArray &name)
 {
 	foreach(const QByteArray &ext, extStrings)
 	{
-		bool found = false;
 		int at = ext.indexOf(';');
 		if(at != -1)
 		{
 			if(ext.mid(0, at).trimmed() == name)
-				found = true;
+				return ext;
 		}
 		else
 		{
 			if(ext == name)
-				found = true;
-		}
-
-		if(found)
-		{
-			HttpExtension e;
-			e.name = name;
-
-			if(at != -1)
-			{
-				bool ok;
-				e.params = parseParams(ext.mid(at + 1), &ok);
-				if(!ok)
-					return HttpExtension();
-			}
-
-			return e;
+				return ext;
 		}
 	}
 
-	return HttpExtension();
+	return QByteArray();
+}
+
+static HttpExtension getExtension(const QList<QByteArray> &extStrings, const QByteArray &name)
+{
+	QByteArray ext = getExtensionRaw(extStrings, name);
+	if(ext.isNull())
+		return HttpExtension();
+
+	HttpExtension e;
+	e.name = name;
+
+	int at = ext.indexOf(';');
+	if(at != -1)
+	{
+		bool ok;
+		e.params = parseParams(ext.mid(at + 1), &ok);
+		if(!ok)
+			return HttpExtension();
+	}
+
+	return e;
 }
 
 class WsProxySession::Private : public QObject
@@ -280,12 +284,7 @@ public:
 
 	void cleanup()
 	{
-		if(inSock)
-		{
-			connectionManager->removeConnection(inSock);
-			delete inSock;
-			inSock = 0;
-		}
+		cleanupInSock();
 
 		delete outSock;
 		outSock = 0;
@@ -305,6 +304,16 @@ public:
 		{
 			zroutes->removeRef(zhttpManager);
 			zhttpManager = 0;
+		}
+	}
+
+	void cleanupInSock()
+	{
+		if(inSock)
+		{
+			connectionManager->removeConnection(inSock);
+			delete inSock;
+			inSock = 0;
 		}
 	}
 
@@ -618,9 +627,7 @@ private slots:
 	void in_closed()
 	{
 		int code = inSock->peerCloseCode();
-		connectionManager->removeConnection(inSock);
-		delete inSock;
-		inSock = 0;
+		cleanupInSock();
 
 		if(!detached && outSock && outSock->state() != WebSocket::Closing)
 			outSock->close(code);
@@ -630,9 +637,7 @@ private slots:
 
 	void in_error()
 	{
-		connectionManager->removeConnection(inSock);
-		delete inSock;
-		inSock = 0;
+		cleanupInSock();
 
 		if(!detached)
 		{
@@ -659,13 +664,21 @@ private slots:
 		{
 			if(!grip.isNull())
 			{
-				if(grip.params.contains("message-prefix"))
-					messagePrefix = grip.params.value("message-prefix");
-				else
-					messagePrefix = "m:";
+				if(!passToUpstream)
+				{
+					if(grip.params.contains("message-prefix"))
+						messagePrefix = grip.params.value("message-prefix");
+					else
+						messagePrefix = "m:";
 
-				acceptGripMessages = true;
-				log_debug("wsproxysession: %p grip enabled, message-prefix=[%s]", q, messagePrefix.data());
+					acceptGripMessages = true;
+					log_debug("wsproxysession: %p grip enabled, message-prefix=[%s]", q, messagePrefix.data());
+				}
+				else
+				{
+					// tell upstream to do the grip stuff
+					headers += HttpHeader("Sec-WebSocket-Extensions", getExtensionRaw(wsExtensions, "grip"));
+				}
 			}
 
 			if(wsControlManager)
@@ -673,6 +686,7 @@ private slots:
 				wsControl = wsControlManager->createSession(publicCid);
 				connect(wsControl, SIGNAL(sendEventReceived(const QByteArray &, const QByteArray &)), SLOT(wsControl_sendEventReceived(const QByteArray &, const QByteArray &)));
 				connect(wsControl, SIGNAL(detachEventReceived()), SLOT(wsControl_detachEventReceived()));
+				connect(wsControl, SIGNAL(cancelEventReceived()), SLOT(wsControl_cancelEventReceived()));
 				wsControl->start(channelPrefix);
 
 				if(!subChannel.isEmpty())
@@ -768,9 +782,8 @@ private slots:
 		}
 		else
 		{
-			connectionManager->removeConnection(inSock);
-			delete inSock;
-			inSock = 0;
+			cleanupInSock();
+
 			delete outSock;
 			outSock = 0;
 
@@ -802,6 +815,19 @@ private slots:
 
 		if(outSock && outSock->state() != WebSocket::Closing)
 			outSock->close();
+	}
+
+	void wsControl_cancelEventReceived()
+	{
+		if(outSock)
+		{
+			delete outSock;
+			outSock = 0;
+		}
+
+		cleanupInSock();
+
+		tryFinish();
 	}
 
 	void activity_timeout()

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2013-2014 Fanout, Inc.
+ * Copyright (C) 2013-2015 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -157,13 +157,13 @@ public:
 
 		QZmq::Socket *sock;
 		State state;
-		bool active;
+		bool works;
 		int reqStartTime;
 
 		ControlPort() :
 			sock(0),
 			state(Disabled),
-			active(false),
+			works(false),
 			reqStartTime(-1)
 		{
 		}
@@ -822,15 +822,12 @@ public:
 		if(conn->outCreditsEnabled)
 			conn->outCredits -= packet.data.size();
 
-		if(conn->flowControl)
-		{
-			conn->bodyTracker.addPlain(bodySize);
-			conn->bodyTracker.specifyEncoded(packet.data.size(), bodySize);
+		conn->bodyTracker.addPlain(bodySize);
+		conn->bodyTracker.specifyEncoded(packet.data.size(), bodySize);
 
-			++(conn->packetsPending);
-			conn->packetTracker.addPlain(1);
-			conn->packetTracker.specifyEncoded(packet.data.size(), 1);
-		}
+		++(conn->packetsPending);
+		conn->packetTracker.addPlain(1);
+		conn->packetTracker.specifyEncoded(packet.data.size(), 1);
 
 		m2_out_write(packet);
 	}
@@ -873,7 +870,8 @@ public:
 		}
 	}
 
-	void m2_tryWriteQueued(M2Connection *conn)
+	// return true if connection was deleted as a result of writing queued items
+	bool m2_tryWriteQueued(M2Connection *conn)
 	{
 		while(!conn->pendingOutItems.isEmpty() && conn->canWrite())
 		{
@@ -888,9 +886,12 @@ public:
 			}
 			else if(item.type == M2PendingOutItem::Close)
 			{
-				m2_writeClose(conn);
+				m2_writeClose(conn); // this will delete the connection
+				return true;
 			}
 		}
+
+		return false;
 	}
 
 	void m2_writeClose(const QByteArray &sender, const QByteArray &id)
@@ -991,7 +992,11 @@ public:
 		QVariant rows = vhash["rows"];
 
 		// once we get at least one successful response then we flag the port as working
-		controlPorts[index].active = true;
+		if(!controlPorts[index].works)
+		{
+			controlPorts[index].works = true;
+			log_debug("control port index=%d works", index);
+		}
 
 		QSet<QByteArray> ids;
 		foreach(const QVariant &row, rows.toList())
@@ -1006,7 +1011,7 @@ public:
 			ids += id;
 
 			M2Connection *conn = m2ConnectionsByRid.value(Rid(m2_send_idents[index], id));
-			if(!conn || !conn->flowControl)
+			if(!conn || !conn->flowControl || conn->outCreditsEnabled)
 				continue;
 
 			if(bytes_written > conn->confirmedBytesWritten)
@@ -1052,7 +1057,8 @@ public:
 		}
 	}
 
-	void handleConnectionBytesWritten(M2Connection *conn, int written, bool giveCredits)
+	// return true if connection was deleted as a result of handling bytes written
+	bool handleConnectionBytesWritten(M2Connection *conn, int written, bool giveCredits)
 	{
 		int bodyWritten = conn->bodyTracker.finished(written);
 		int packetsWritten = conn->packetTracker.finished(written);
@@ -1063,13 +1069,17 @@ public:
 			conn->waitForAllWritten = false;
 
 		// if we had any pending writes to make, now's the time
-		m2_tryWriteQueued(conn);
+		bool connDeleted = m2_tryWriteQueued(conn);
+		if(connDeleted)
+			return true;
 
 		if(conn->session && bodyWritten > 0)
 		{
 			conn->session->lastActive = time.elapsed();
 			handleSessionBodyWritten(conn->session, bodyWritten, giveCredits);
 		}
+
+		return false;
 	}
 
 	void handleSessionBodyWritten(Session *s, int written, bool giveCredits)
@@ -1365,7 +1375,7 @@ public:
 					if(firstDataPacket)
 					{
 						// use flow control if the control port works and the response is more than one packet
-						if((s->conn->outCreditsEnabled || controlPorts[s->conn->identIndex].active) && zresp.more)
+						if((s->conn->outCreditsEnabled || controlPorts[s->conn->identIndex].works) && zresp.more)
 							s->conn->flowControl = true;
 						else
 							s->conn->flowControl = false;
@@ -1503,7 +1513,7 @@ public:
 				if(!s->sentResponseHeader)
 				{
 					s->sentResponseHeader = true;
-					if(s->conn->outCreditsEnabled || controlPorts[s->conn->identIndex].active)
+					if(s->conn->outCreditsEnabled || controlPorts[s->conn->identIndex].works)
 						s->conn->flowControl = true;
 					else
 						s->conn->flowControl = false;
@@ -1514,11 +1524,11 @@ public:
 						headers.removeAll(h);
 					headers.removeAll("Transfer-Encoding");
 					headers.removeAll("Upgrade");
-					headers.removeAll("Sec-Websocket-Accept");
+					headers.removeAll("Sec-WebSocket-Accept");
 
 					headers += HttpHeader("Upgrade", "websocket");
 					headers += HttpHeader("Connection", "Upgrade");
-					headers += HttpHeader("Sec-Websocket-Accept", s->acceptToken);
+					headers += HttpHeader("Sec-WebSocket-Accept", s->acceptToken);
 
 					QByteArray reason;
 					if(!zresp.reason.isEmpty())
@@ -1742,13 +1752,6 @@ private slots:
 
 			if(mreq.downloadCredits >= 0)
 			{
-				if(controlPorts[index].state != ControlPort::Disabled)
-				{
-					log_error("m2: request id=%s uses download credits but control port is activated, skipping", mreq.id.data());
-					m2_writeCtlCancel(mreq.sender, mreq.id);
-					return;
-				}
-
 				conn->outCreditsEnabled = true;
 				conn->outCredits += mreq.downloadCredits;
 			}
@@ -1756,18 +1759,6 @@ private slots:
 			{
 				if(controlPorts[index].state == ControlPort::Disabled)
 				{
-					// activate the control port, but only if there are no other requests yet
-
-					// NOTE: technically we only need to check that there are no requests
-					//   from the same sender, not all senders, but this is such an edge
-					//   case that it doesn't matter much
-					if(!m2ConnectionsByRid.isEmpty())
-					{
-						log_error("m2: request id=%s unexpectedly doesn't use download credits, skipping", mreq.id.data());
-						m2_writeCtlCancel(mreq.sender, mreq.id);
-						return;
-					}
-
 					log_debug("activating control port index=%d", index);
 					controlPorts[index].state = ControlPort::Idle;
 				}
@@ -1789,10 +1780,12 @@ private slots:
 		else
 		{
 			// if packet contained credits, handle them now
-			if(mreq.downloadCredits > 0)
+			if(conn->outCreditsEnabled && mreq.downloadCredits > 0)
 			{
 				conn->outCredits += mreq.downloadCredits;
-				handleConnectionBytesWritten(conn, mreq.downloadCredits, true);
+				bool connDeleted = handleConnectionBytesWritten(conn, mreq.downloadCredits, true);
+				if(connDeleted)
+					return;
 			}
 
 			// if the packet only held credits, then there's nothing else to do
@@ -2096,7 +2089,26 @@ private slots:
 
 			handleControlResponse(index, data);
 
-			c.state = ControlPort::Idle;
+			bool needControlPort = false;
+			QHashIterator<Rid, M2Connection*> it(m2ConnectionsByRid);
+			while(it.hasNext())
+			{
+				it.next();
+				M2Connection *conn = it.value();
+				if(!conn->outCreditsEnabled)
+					needControlPort = true;
+			}
+
+			if(needControlPort)
+			{
+				c.state = ControlPort::Idle;
+			}
+			else
+			{
+				log_debug("deactivating control port index=%d", index);
+				c.state = ControlPort::Disabled;
+			}
+
 			c.reqStartTime = -1;
 		}
 	}
