@@ -1,4 +1,4 @@
 version=3
-opts=downloadurlmangle=s/\/:/\//,filenamemangle=s/\/:/\// \
+opts=downloadurlmangle=s/\/:/\//,filenamemangle=s/:// \
 https://dl.bintray.com/fanout/source/ \
 (?::?pushpin-)(\d[^\s/]*)\.(?:tar\.xz|txz|tar\.bz2|tbz2|tar\.gz|tgz)
