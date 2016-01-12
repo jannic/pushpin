@@ -1,9 +1,0 @@
-pushpin for Debian
-------------------
-
-Pushpin orig tarball is created using
-uscan --repack --compression xz
-
-That command downloads the latest version from
-https://dl.bintray.com/fanout/source/pushpin-<VERSION>.tar.bz2 and removes
-the file configure.exe from the archive, as its source is not included.

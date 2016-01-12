@@ -21,4 +21,4 @@ override_dh_auto_install:
 	mkdir -p debian/pushpin/var/log/pushpin
 
 get-orig-source:
-	uscan --verbose --force-download --rename --repack --compression xz
+	uscan --verbose --force-download --rename

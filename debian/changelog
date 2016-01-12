@@ -3,8 +3,11 @@ pushpin (1.7.0-1) UNRELEASED; urgency=medium
   * New upstream version
   * Fix /etc/default/pushpin, use DAEMON_ARGS instead of DAEMON_OPTS
   * Remove obsolete dependency on python-sortedcontainers | python-blist
+  * Remove code to build DFSG-free source package. (Upstream
+    removed configure.exe from the tarballs with version 1.6.0, so we
+    can use the original upstream tarball.
 
- -- Jan Niehusmann <jan@debian.org>  Mon, 11 Jan 2016 23:59:35 +0100
+ -- Jan Niehusmann <jan@debian.org>  Tue, 12 Jan 2016 12:49:56 +0100
 
 pushpin (1.6.0-1) unstable; urgency=medium
 
