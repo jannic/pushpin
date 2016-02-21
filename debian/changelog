@@ -1,6 +1,7 @@
 pushpin (1.7.0.1-1~exp1) UNRELEASED; urgency=medium
 
   * import devel branch (experimental!)
+  * apply hardening flags via ./configure --extraconf
 
  -- Jan Niehusmann <jan@debian.org>  Sun, 21 Feb 2016 16:38:44 +0100
 
