@@ -1,9 +1,9 @@
-pushpin (1.7.0.1-1~exp1) UNRELEASED; urgency=medium
+pushpin (1.8.0-1) UNRELEASED; urgency=medium
 
-  * import devel branch (experimental!)
+  * New upstream version
   * apply hardening flags via ./configure --extraconf
 
- -- Jan Niehusmann <jan@debian.org>  Sun, 21 Feb 2016 16:38:44 +0100
+ -- Jan Niehusmann <jan@debian.org>  Thu, 25 Feb 2016 09:33:42 +0100
 
 pushpin (1.7.0-1) unstable; urgency=medium
 
