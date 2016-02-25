@@ -2,6 +2,8 @@ pushpin (1.8.0-1) UNRELEASED; urgency=medium
 
   * New upstream version
   * apply hardening flags via ./configure --extraconf
+  * Remove internal.conf from /etc/pushpin/; it was never meant to be
+    modified locally.
 
  -- Jan Niehusmann <jan@debian.org>  Thu, 25 Feb 2016 09:33:42 +0100
 
