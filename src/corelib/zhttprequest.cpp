@@ -822,8 +822,8 @@ public slots:
 					state = Stopped;
 					errored = true;
 					errorCondition = ZhttpRequest::ErrorRequestTooLarge;
-					emit q->error();
 					cleanup();
+					emit q->error();
 					return;
 				}
 
@@ -859,8 +859,8 @@ public slots:
 					state = Stopped;
 					errored = true;
 					errorCondition = ZhttpRequest::ErrorUnavailable;
-					emit q->error();
 					cleanup();
+					emit q->error();
 					return;
 				}
 
@@ -1024,6 +1024,11 @@ void ZhttpRequest::setIgnorePolicies(bool on)
 void ZhttpRequest::setIgnoreTlsErrors(bool on)
 {
 	d->ignoreTlsErrors = on;
+}
+
+void ZhttpRequest::setIsTls(bool on)
+{
+	d->requestUri.setScheme(on ? "https" : "http");
 }
 
 void ZhttpRequest::start(const QString &method, const QUrl &uri, const HttpHeaders &headers)

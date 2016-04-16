@@ -20,7 +20,7 @@
 #include "wsproxysession.h"
 
 #include <assert.h>
-#include <QTimer>
+#include <QDateTime>
 #include <QUrl>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -233,6 +233,7 @@ public:
 	QByteArray defaultSigKey;
 	QByteArray defaultUpstreamKey;
 	bool passToUpstream;
+	bool acceptXForwardedProtocol;
 	bool useXForwardedProtocol;
 	XffRule xffRule;
 	XffRule xffTrustedRule;
@@ -246,11 +247,12 @@ public:
 	QByteArray routeId;
 	QByteArray channelPrefix;
 	QList<DomainMap::Target> targets;
+	DomainMap::Target target;
 	bool acceptGripMessages;
 	QByteArray messagePrefix;
 	bool detached;
 	QString subChannel;
-	QTimer *activityTimer;
+	QDateTime activityTime;
 	QByteArray publicCid;
 
 	Private(WsProxySession *_q, ZRoutes *_zroutes, ConnectionManager *_connectionManager, StatsManager *_statsManager, WsControlManager *_wsControlManager) :
@@ -264,6 +266,7 @@ public:
 		wsControlManager(_wsControlManager),
 		wsControl(0),
 		passToUpstream(false),
+		acceptXForwardedProtocol(false),
 		useXForwardedProtocol(false),
 		inSock(0),
 		outSock(0),
@@ -273,9 +276,6 @@ public:
 		acceptGripMessages(false),
 		detached(false)
 	{
-		activityTimer = new QTimer(this);
-		connect(activityTimer, SIGNAL(timeout()), SLOT(activity_timeout()));
-		activityTimer->setSingleShot(true);
 	}
 
 	~Private()
@@ -292,14 +292,6 @@ public:
 
 		delete wsControl;
 		wsControl = 0;
-
-		if(activityTimer)
-		{
-			activityTimer->setParent(0);
-			activityTimer->disconnect(this);
-			activityTimer->deleteLater();
-			activityTimer = 0;
-		}
 
 		if(zhttpManager)
 		{
@@ -327,7 +319,7 @@ public:
 		publicCid = _publicCid;
 
 		if(statsManager)
-			activityTimer->start(ACTIVITY_TIMEOUT);
+			activityTime = QDateTime::currentDateTimeUtc();
 
 		inSock = sock;
 		inSock->setParent(this);
@@ -381,7 +373,7 @@ public:
 
 		log_debug("wsproxysession: %p %s has %d routes", q, qPrintable(host), targets.count());
 
-		bool trustedClient = ProxyUtil::manipulateRequestHeaders("wsproxysession", q, &requestData, defaultUpstreamKey, entry, sigIss, sigKey, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, inSock->peerAddress(), InspectData());
+		bool trustedClient = ProxyUtil::manipulateRequestHeaders("wsproxysession", q, &requestData, defaultUpstreamKey, entry, sigIss, sigKey, acceptXForwardedProtocol, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, inSock->peerAddress(), InspectData());
 
 		// don't proxy extensions, as we may not know how to handle them
 		requestData.headers.removeAll("Sec-WebSocket-Extensions");
@@ -403,7 +395,7 @@ public:
 			return;
 		}
 
-		DomainMap::Target target = targets.takeFirst();
+		target = targets.takeFirst();
 
 		QUrl uri = requestData.uri;
 		if(target.ssl)
@@ -476,6 +468,8 @@ public:
 	void reject(int code, const QByteArray &reason, const HttpHeaders &headers, const QByteArray &body)
 	{
 		assert(state == Connecting);
+
+		logConnection(code, body.size());
 
 		state = Closing;
 		inSock->respondError(code, reason, headers, body);
@@ -575,12 +569,41 @@ public:
 
 	void tryLogActivity()
 	{
-		if(statsManager && !activityTimer->isActive())
+		if(statsManager && !activityTime.isNull())
 		{
-			statsManager->addActivity(routeId);
+			QDateTime now = QDateTime::currentDateTimeUtc();
+			if(now >= activityTime.addMSecs(ACTIVITY_TIMEOUT))
+			{
+				statsManager->addActivity(routeId);
 
-			activityTimer->start(ACTIVITY_TIMEOUT);
+				activityTime = activityTime.addMSecs((activityTime.msecsTo(now) / ACTIVITY_TIMEOUT) * ACTIVITY_TIMEOUT);
+			}
 		}
+	}
+
+	void logConnection(int responseCode, int responseBodySize)
+	{
+		QString targetStr;
+		if(target.type == DomainMap::Target::Custom)
+		{
+			targetStr = (target.zhttpRoute.req ? "zhttpreq/" : "zhttp/") + target.zhttpRoute.baseSpec;
+		}
+		else // Default
+		{
+			targetStr = target.connectHost + ':' + QString::number(target.connectPort);
+		}
+
+		QString msg = QString("GET %1 -> %2").arg(inSock->requestUri().toString(QUrl::FullyEncoded)).arg(targetStr);
+		if(target.overHttp)
+			msg += "[http]";
+		QUrl ref = QUrl(QString::fromUtf8(inSock->requestHeaders().get("Referer")));
+		if(!ref.isEmpty())
+			msg += QString(" ref=%1").arg(ref.toString(QUrl::FullyEncoded));
+		if(!routeId.isEmpty())
+			msg += QString(" route=%1").arg(QString::fromUtf8(routeId));
+		msg += QString(" code=%1 %2").arg(responseCode).arg(responseBodySize);
+
+		log_info("%s", qPrintable(msg));
 	}
 
 private slots:
@@ -688,7 +711,7 @@ private slots:
 				connect(wsControl, SIGNAL(sendEventReceived(const QByteArray &, const QByteArray &)), SLOT(wsControl_sendEventReceived(const QByteArray &, const QByteArray &)));
 				connect(wsControl, SIGNAL(detachEventReceived()), SLOT(wsControl_detachEventReceived()));
 				connect(wsControl, SIGNAL(cancelEventReceived()), SLOT(wsControl_cancelEventReceived()));
-				wsControl->start(channelPrefix);
+				wsControl->start(channelPrefix, inSock->requestUri());
 
 				if(!subChannel.isEmpty())
 				{
@@ -705,6 +728,8 @@ private slots:
 		}
 
 		inSock->respondSuccess(outSock->responseReason(), headers);
+
+		logConnection(inSock->responseCode(), 0);
 
 		// send any pending frames
 		tryReadIn();
@@ -868,6 +893,11 @@ void WsProxySession::setDefaultSigKey(const QByteArray &iss, const QByteArray &k
 void WsProxySession::setDefaultUpstreamKey(const QByteArray &key)
 {
 	d->defaultUpstreamKey = key;
+}
+
+void WsProxySession::setAcceptXForwardedProtocol(bool enabled)
+{
+	d->acceptXForwardedProtocol = enabled;
 }
 
 void WsProxySession::setUseXForwardedProtocol(bool enabled)

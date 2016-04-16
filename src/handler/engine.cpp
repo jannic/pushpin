@@ -666,6 +666,7 @@ class WsSession : public QObject
 public:
 	QString cid;
 	QString channelPrefix;
+	HttpRequestData requestData;
 	QString sid;
 	QHash<QString, QString> meta;
 	QHash<QString, QStringList> channelFilters; // k=channel, v=list(filters)
@@ -1792,6 +1793,9 @@ private:
 			stats->addMessage(item.channel, item.id, "ws-message", wsSessions.count());
 		}
 
+		int receivers = responseHolds.count() + streamHolds.count() + wsSessions.count();
+		log_info("publish channel=%s receivers=%d", qPrintable(item.channel), receivers);
+
 		foreach(const QString &channel, responseUnsubs)
 			stats->removeSubscription("response", channel, true);
 
@@ -1872,6 +1876,24 @@ private:
 				inSubSock->unsubscribe(channel.toUtf8());
 			}
 		}
+	}
+
+	void httpControlRespond(HttpRequest *req, int code, const QByteArray &reason, const QString &body, const QByteArray &contentType = QByteArray(), const HttpHeaders &headers = HttpHeaders(), int items = -1)
+	{
+		HttpHeaders outHeaders = headers;
+		if(!contentType.isEmpty())
+			outHeaders += HttpHeader("Content-Type", contentType);
+		else
+			outHeaders += HttpHeader("Content-Type", "text/plain");
+
+		req->respond(code, reason, outHeaders, body.toUtf8());
+		connect(req, SIGNAL(finished()), req, SLOT(deleteLater()));
+
+		QString msg = QString("control: %1 %2 code=%3 %4").arg(req->requestMethod()).arg(QString::fromUtf8(req->requestUri())).arg(code).arg(body.size());
+		if(items > -1)
+			msg += QString(" items=%1").arg(items);
+
+		log_info("%s", qPrintable(msg));
 	}
 
 private slots:
@@ -2029,6 +2051,7 @@ private slots:
 					connect(s, SIGNAL(expired()), SLOT(wssession_expired()));
 					s->cid = QString::fromUtf8(item.cid);
 					s->ttl = item.ttl;
+					s->requestData.uri = item.uri;
 					s->refreshExpiration();
 					cs.wsSessions.insert(s->cid, s);
 					log_debug("added ws session: %s", qPrintable(s->cid));
@@ -2106,6 +2129,8 @@ private slots:
 
 					stats->addSubscription("ws", channel);
 					addSub(channel);
+
+					log_info("subscribe %s channel=%s", qPrintable(s->requestData.uri.toString(QUrl::FullyEncoded)), qPrintable(channel));
 				}
 				else if(cm.type == WsControlMessage::Unsubscribe)
 				{
@@ -2238,7 +2263,60 @@ private slots:
 		if(!req)
 			return;
 
-		if(req->requestUri() == "/publish/" || req->requestUri() == "/publish")
+		QByteArray path = req->requestUri();
+		if(path.endsWith("/"))
+			path.truncate(path.length() - 1);
+
+		HttpHeaders headers = req->requestHeaders();
+
+		QByteArray responseContentType;
+		if(headers.contains("Accept"))
+		{
+			foreach(const HttpHeaderParameters &params, headers.getAllAsParameters("Accept"))
+			{
+				if(params.isEmpty() || params[0].first.isEmpty())
+					continue;
+
+				QList<QByteArray> type = params[0].first.split('/');
+				if(type[0] == "text" && type[1] == "plain")
+				{
+					responseContentType = "text/plain";
+					break;
+				}
+				else if(type[0] == "application" && type[1] == "json")
+				{
+					responseContentType = "application/json";
+					break;
+				}
+				else if(type[0] == "text" && type[1] == "*")
+				{
+					responseContentType = "text/plain";
+					break;
+				}
+				else if(type[0] == "application" && type[1] == "*")
+				{
+					responseContentType = "application/json";
+					break;
+				}
+				else if(type[0] == "*" && type[1] == "*")
+				{
+					responseContentType = "text/plain";
+					break;
+				}
+			}
+
+			if(responseContentType.isEmpty())
+			{
+				httpControlRespond(req, 406, "Not Acceptable", "Not Acceptable. Supported formats are text/plain and application/json.\n");
+				return;
+			}
+		}
+		else
+		{
+			responseContentType = "text/plain";
+		}
+
+		if(path == "/publish")
 		{
 			if(req->requestMethod() == "POST")
 			{
@@ -2246,15 +2324,13 @@ private slots:
 				QJsonDocument doc = QJsonDocument::fromJson(req->requestBody(), &e);
 				if(e.error != QJsonParseError::NoError)
 				{
-					req->respond(400, "Bad Request", "Body is not valid JSON.\n");
-					connect(req, SIGNAL(finished()), req, SLOT(deleteLater()));
+					httpControlRespond(req, 400, "Bad Request", "Body is not valid JSON.\n");
 					return;
 				}
 
 				if(!doc.isObject())
 				{
-					req->respond(400, "Bad Request", "Invalid format.\n");
-					connect(req, SIGNAL(finished()), req, SLOT(deleteLater()));
+					httpControlRespond(req, 400, "Bad Request", "Invalid format.\n");
 					return;
 				}
 
@@ -2263,15 +2339,13 @@ private slots:
 
 				if(!mdata.contains("items"))
 				{
-					req->respond(400, "Bad Request", "Invalid format: object does not contain 'items'\n");
-					connect(req, SIGNAL(finished()), req, SLOT(deleteLater()));
+					httpControlRespond(req, 400, "Bad Request", "Invalid format: object does not contain 'items'\n");
 					return;
 				}
 
 				if(mdata["items"].type() != QVariant::List)
 				{
-					req->respond(400, "Bad Request", "Invalid format: object contains 'items' with wrong type\n");
-					connect(req, SIGNAL(finished()), req, SLOT(deleteLater()));
+					httpControlRespond(req, 400, "Bad Request", "Invalid format: object contains 'items' with wrong type\n");
 					return;
 				}
 
@@ -2282,30 +2356,37 @@ private slots:
 				QList<PublishItem> items = parseHttpItems(vitems, &ok, &errorMessage);
 				if(!ok)
 				{
-					req->respond(400, "Bad Request", QString("Invalid format: %1\n").arg(errorMessage));
-					connect(req, SIGNAL(finished()), req, SLOT(deleteLater()));
+					httpControlRespond(req, 400, "Bad Request", QString("Invalid format: %1\n").arg(errorMessage));
 					return;
+				}
+
+				QString message = "Published";
+				if(responseContentType == "application/json")
+				{
+					QVariantMap obj;
+					obj["message"] = message;
+					QString body = QJsonDocument(QJsonObject::fromVariantMap(obj)).toJson(QJsonDocument::Compact);
+					httpControlRespond(req, 200, "OK", body + "\n", responseContentType, HttpHeaders(), items.count());
+				}
+				else // text/plain
+				{
+					httpControlRespond(req, 200, "OK", message + "\n", responseContentType, HttpHeaders(), items.count());
 				}
 
 				foreach(const PublishItem &item, items)
 					handlePublishItem(item);
-
-				req->respond(200, "OK", "Published\n");
 			}
 			else
 			{
 				HttpHeaders headers;
-				headers += HttpHeader("Content-Type", "text/plain");
 				headers += HttpHeader("Allow", "POST");
-				req->respond(405, "Method Not Allowed", headers, "Method not allowed: " + req->requestMethod().toUtf8() + ".\n");
+				httpControlRespond(req, 405, "Method Not Allowed", "Method not allowed: " + req->requestMethod() + ".\n", QByteArray(), headers);
 			}
 		}
 		else
 		{
-			req->respond(404, "Not Found", "Not Found\n");
+			httpControlRespond(req, 404, "Not Found", "Not Found\n");
 		}
-
-		connect(req, SIGNAL(finished()), req, SLOT(deleteLater()));
 	}
 
 	void sessionCreateOrUpdate_finished(const DeferredResult &result)
@@ -2379,6 +2460,8 @@ private slots:
 
 					cs.streamHoldsByChannel[channel] += hold;
 				}
+
+				log_info("subscribe %s channel=%s", qPrintable(hold->requestData.uri.toString(QUrl::FullyEncoded)), qPrintable(channel));
 
 				stats->addSubscription(hold->mode == Instruct::ResponseHold ? "response" : "stream", channel);
 				addSub(channel);
