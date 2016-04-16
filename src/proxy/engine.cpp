@@ -330,6 +330,7 @@ public:
 			ps->setRoute(route);
 			ps->setDefaultSigKey(config.sigIss, config.sigKey);
 			ps->setDefaultUpstreamKey(config.upstreamKey);
+			ps->setAcceptXForwardedProtocol(config.acceptXForwardedProtocol);
 			ps->setUseXForwardedProtocol(config.useXForwardedProtocol);
 			ps->setXffRules(config.xffUntrustedRule, config.xffTrustedRule);
 			ps->setOrigHeadersNeedMark(config.origHeadersNeedMark);
@@ -372,6 +373,7 @@ public:
 
 		ps->setDefaultSigKey(config.sigIss, config.sigKey);
 		ps->setDefaultUpstreamKey(config.upstreamKey);
+		ps->setAcceptXForwardedProtocol(config.acceptXForwardedProtocol);
 		ps->setUseXForwardedProtocol(config.useXForwardedProtocol);
 		ps->setXffRules(config.xffUntrustedRule, config.xffTrustedRule);
 		ps->setOrigHeadersNeedMark(config.origHeadersNeedMark);
@@ -403,6 +405,12 @@ public:
 		return true;
 	}
 
+	bool isXForwardedProtocolTls(const HttpHeaders &headers)
+	{
+		QByteArray xfp = headers.get("X-Forwarded-Protocol");
+		return (!xfp.isEmpty() && (xfp == "https" || xfp == "wss"));
+	}
+
 	void tryTakeRequest()
 	{
 		if(!canTake())
@@ -411,6 +419,9 @@ public:
 		ZhttpRequest *req = zhttpIn->takeNextRequest();
 		if(!req)
 			return;
+
+		if(config.acceptXForwardedProtocol && isXForwardedProtocolTls(req->requestHeaders()))
+			req->setIsTls(true);
 
 		RequestSession *rs = new RequestSession(domainMap, sockJsManager, inspect, inspectChecker, accept, this);
 		connect(rs, SIGNAL(inspected(const InspectData &)), SLOT(rs_inspected(const InspectData &)));
@@ -435,9 +446,12 @@ public:
 		if(!sock)
 			return;
 
+		if(config.acceptXForwardedProtocol && isXForwardedProtocolTls(sock->requestHeaders()))
+			sock->setIsTls(true);
+
 		QUrl requestUri = sock->requestUri();
 
-		log_info("IN ws id=%s, %s", sock->rid().second.data(), requestUri.toEncoded().data());
+		log_debug("IN ws id=%s, %s", sock->rid().second.data(), requestUri.toEncoded().data());
 
 		bool isSecure = (requestUri.scheme() == "wss");
 		QString host = requestUri.host();
@@ -467,7 +481,7 @@ public:
 		if(!sock)
 			return;
 
-		log_info("IN sockjs obj=%p %s", sock, sock->requestUri().toEncoded().data());
+		log_debug("IN sockjs obj=%p %s", sock, sock->requestUri().toEncoded().data());
 
 		log_debug("creating wsproxysession for sockjs=%p", sock);
 		doProxySocket(sock, sock->route());
@@ -531,6 +545,18 @@ private slots:
 	void rs_finishedByAccept()
 	{
 		RequestSession *rs = (RequestSession *)sender();
+
+		HttpRequestData rd = rs->requestData();
+		DomainMap::Entry e = rs->route();
+
+		QString msg = QString("%1 %2").arg(rd.method).arg(rd.uri.toString(QUrl::FullyEncoded));
+		QUrl ref = QUrl(QString::fromUtf8(rd.headers.get("Referer")));
+		if(!ref.isEmpty())
+			msg += QString(" ref=%1").arg(ref.toString(QUrl::FullyEncoded));
+		if(!e.id.isEmpty())
+			msg += QString(" route=%1").arg(QString::fromUtf8(e.id));
+		msg += " int";
+		log_info("%s", qPrintable(msg));
 
 		if(stats)
 		{
@@ -632,7 +658,7 @@ private slots:
 			return;
 		}
 
-		log_info("IN (retry) %s %s", qPrintable(p.requestData.method), p.requestData.uri.toEncoded().data());
+		log_debug("IN (retry) %s %s", qPrintable(p.requestData.method), p.requestData.uri.toEncoded().data());
 
 		InspectData idata;
 		if(p.haveInspectInfo)

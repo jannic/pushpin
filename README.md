@@ -2,7 +2,7 @@ Pushpin
 =======
 
 Website: http://pushpin.org/  
-Mailing List: http://lists.fanout.io/listinfo.cgi/fanout-users-fanout.io  
+Mailing List: http://lists.fanout.io/mailman/listinfo/fanout-users  
 Chat Room: [![Join the chat at https://gitter.im/fanout/pushpin](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/fanout/pushpin?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
 Pushpin is a reverse proxy server written in C++ that makes it easy to implement WebSocket, HTTP streaming, and HTTP long-polling services. The project is unique among realtime push solutions in that it is designed to address the needs of API creators. Pushpin is transparent to clients and integrates easily into an API stack.
@@ -173,6 +173,45 @@ The `while` loop is deceptive. It looks like it's looping for the lifetime of th
 
 For details on the underlying protocol conversion, see the [WebSocket-Over-HTTP Protocol spec](https://github.com/fanout/pushpin/blob/develop/docs/websocket-over-http.md).
 
+Example without a webserver
+---------------------------
+
+Pushpin can also connect to backend servers via ZeroMQ instead of HTTP. This may be preferred for writing lower-level services where a real webserver isn't needed. The messages exchanged over the ZeroMQ connection contain the same information as HTTP, encoded as TNetStrings.
+
+To use a ZeroMQ backend, first make sure there's an appropriate route in Pushpin's `routes` file:
+```
+* zhttpreq/tcp://127.0.0.1:10000
+```
+
+The above line tells Pushpin to bind a REQ-compatible socket on port 10000 that handlers can connect to.
+
+Activating an HTTP stream is as easy as responding on a REP socket:
+```python
+import zmq
+import tnetstring
+
+zmq_context = zmq.Context()
+sock = zmq_context.socket(zmq.REP)
+sock.connect('tcp://127.0.0.1:10000')
+
+while True:
+    req = tnetstring.loads(sock.recv()[1:])
+
+    resp = {
+        'id': req['id'],
+        'code': 200,
+        'reason': 'OK',
+        'headers': [
+            ['Grip-Hold', 'stream'],
+            ['Grip-Channel', 'test'],
+            ['Content-Type', 'text/plain']
+        ],
+        'body': 'welcome to the stream\n'
+    }
+
+    sock.send('T' + tnetstring.dumps(resp))
+```
+
 Why another realtime solution?
 ------------------------------
 
@@ -203,7 +242,7 @@ If you want to build the git version and have the dependencies installed already
 git submodule init && git submodule update
 
 # build
-make
+./configure --qtselect=5 && make
 
 # copy default config
 cp -r examples/config .
