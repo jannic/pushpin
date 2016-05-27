@@ -3,7 +3,7 @@ Section: net
 Priority: extra
 Maintainer: Jan Niehusmann <jan@debian.org>
 Build-Depends: debhelper (>= 9), qtbase5-dev, qt5-qmake, qtchooser, libzmq3-dev (>= 2.0), pkg-config, qconf
-Standards-Version: 3.9.7
+Standards-Version: 3.9.8
 Homepage: https://github.com/fanout/pushpin
 Vcs-Git: git://anonscm.debian.org/users/jan/pushpin.git
 Vcs-Browser: http://anonscm.debian.org/gitweb/?p=users/jan/pushpin.git;a=summary
