@@ -42,7 +42,7 @@
 #include "zhttprequest.h"
 #include "statsmanager.h"
 #include "deferred.h"
-#include "httpserver.h"
+#include "simplehttpserver.h"
 #include "variantutil.h"
 #include "detectrule.h"
 #include "lastids.h"
@@ -64,6 +64,7 @@
 #define RETRY_WAIT_TIME 0
 #define WSCONTROL_WAIT_TIME 0
 #define STATE_RPC_TIMEOUT 1000
+#define DEFAULT_WS_KEEPALIVE_TIMEOUT 55
 
 using namespace VariantUtil;
 
@@ -366,6 +367,7 @@ public:
 	int timeout;
 	int keepAliveTimeout;
 	QByteArray keepAliveData;
+	bool responseSent;
 	QTimer *timer;
 	StatsManager *stats;
 
@@ -376,6 +378,7 @@ public:
 		jsonpExtendedResponse(false),
 		timeout(-1),
 		keepAliveTimeout(-1),
+		responseSent(false),
 		stats(_stats)
 	{
 		req->setParent(this);
@@ -406,12 +409,15 @@ public:
 		}
 		else // StreamHold
 		{
-			// send initial response
-			response.headers.removeAll("Content-Length");
-			if(autoCrossOrigin)
-				Cors::applyCorsHeaders(requestData.headers, &response.headers);
-			req->beginResponse(response.code, response.reason, response.headers);
-			req->writeBody(response.body);
+			if(!responseSent)
+			{
+				// send initial response
+				response.headers.removeAll("Content-Length");
+				if(autoCrossOrigin)
+					Cors::applyCorsHeaders(requestData.headers, &response.headers);
+				req->beginResponse(response.code, response.reason, response.headers);
+				req->writeBody(response.body);
+			}
 
 			// start keep alive timer
 			if(keepAliveTimeout >= 0)
@@ -667,11 +673,14 @@ public:
 	QString cid;
 	QString channelPrefix;
 	HttpRequestData requestData;
+	QString route;
 	QString sid;
 	QHash<QString, QString> meta;
 	QHash<QString, QStringList> channelFilters; // k=channel, v=list(filters)
 	QSet<QString> channels;
 	int ttl;
+	QByteArray keepAliveType;
+	QByteArray keepAliveMessage;
 	QTimer *timer;
 
 	WsSession(QObject *parent = 0) :
@@ -679,6 +688,13 @@ public:
 	{
 		timer = new QTimer(this);
 		connect(timer, SIGNAL(timeout()), SLOT(timer_timeout()));
+	}
+
+	~WsSession()
+	{
+		timer->disconnect(this);
+		timer->setParent(0);
+		timer->deleteLater();
 	}
 
 	void refreshExpiration()
@@ -817,6 +833,7 @@ public:
 	bool haveInspectInfo;
 	InspectData inspectInfo;
 	HttpResponseData responseData;
+	bool responseSent;
 	QString sid;
 	LastIds lastIds;
 	QList<Hold*> holds;
@@ -828,7 +845,8 @@ public:
 		cs(_cs),
 		zhttpIn(_zhttpIn),
 		stats(_stats),
-		haveInspectInfo(false)
+		haveInspectInfo(false),
+		responseSent(false)
 	{
 		req->setParent(this);
 	}
@@ -1074,6 +1092,17 @@ public:
 				haveInspectInfo = true;
 			}
 
+			if(args.contains("response-sent"))
+			{
+				if(args["response-sent"].type() != QVariant::Bool)
+				{
+					respondError("bad-request");
+					return;
+				}
+
+				responseSent = args["response-sent"].toBool();
+			}
+
 			bool useSession = false;
 			if(args.contains("use-session"))
 			{
@@ -1304,6 +1333,7 @@ private:
 			ss.requestUri.setScheme(rs.isHttps ? "https" : "http");
 			ss.requestHeaders = requestData.headers;
 			ss.requestBody = requestData.body;
+			ss.responseCode = rs.responseCode;
 			ss.inSeq = rs.inSeq;
 			ss.outSeq = rs.outSeq;
 			ss.outCredits = rs.outCredits;
@@ -1326,6 +1356,7 @@ private:
 			hold->keepAliveData = instruct.keepAliveData;
 			hold->sid = sid;
 			hold->meta = instruct.meta;
+			hold->responseSent = responseSent;
 
 			foreach(const Instruct::Channel &c, instruct.channels)
 				hold->channels.insert(channelPrefix + c.name, c);
@@ -1382,7 +1413,7 @@ public:
 	QZmq::Socket *statsSock;
 	QZmq::Socket *proxyStatsSock;
 	QZmq::Valve *proxyStatsValve;
-	HttpServer *controlHttpServer;
+	SimpleHttpServer *controlHttpServer;
 	StatsManager *stats;
 	CommonState cs;
 	QSet<Deferred*> deferreds;
@@ -1634,7 +1665,7 @@ public:
 
 		if(config.pushInHttpPort != -1)
 		{
-			controlHttpServer = new HttpServer(this);
+			controlHttpServer = new SimpleHttpServer(this);
 			connect(controlHttpServer, SIGNAL(requestReady()), SLOT(controlHttpServer_requestReady()));
 			controlHttpServer->listen(config.pushInHttpAddr, config.pushInHttpPort);
 
@@ -1784,9 +1815,28 @@ private:
 			{
 				WsControlPacket::Item i;
 				i.cid = s->cid.toUtf8();
-				i.type = WsControlPacket::Item::Send;
-				i.contentType = f.binary ? "binary" : "text";
-				i.message = f.body;
+
+				if(f.close)
+				{
+					i.type = WsControlPacket::Item::Close;
+					i.code = f.code;
+				}
+				else
+				{
+					i.type = WsControlPacket::Item::Send;
+
+					switch(f.messageType)
+					{
+						case PublishFormat::Text:   i.contentType = "text"; break;
+						case PublishFormat::Binary: i.contentType = "binary"; break;
+						case PublishFormat::Ping:   i.contentType = "ping"; break;
+						case PublishFormat::Pong:   i.contentType = "pong"; break;
+						default: continue; // unrecognized type, skip
+					}
+
+					i.message = f.body;
+				}
+
 				writeWsControlItem(i);
 			}
 
@@ -1878,7 +1928,7 @@ private:
 		}
 	}
 
-	void httpControlRespond(HttpRequest *req, int code, const QByteArray &reason, const QString &body, const QByteArray &contentType = QByteArray(), const HttpHeaders &headers = HttpHeaders(), int items = -1)
+	void httpControlRespond(SimpleHttpRequest *req, int code, const QByteArray &reason, const QString &body, const QByteArray &contentType = QByteArray(), const HttpHeaders &headers = HttpHeaders(), int items = -1)
 	{
 		HttpHeaders outHeaders = headers;
 		if(!contentType.isEmpty())
@@ -1889,7 +1939,7 @@ private:
 		req->respond(code, reason, outHeaders, body.toUtf8());
 		connect(req, SIGNAL(finished()), req, SLOT(deleteLater()));
 
-		QString msg = QString("control: %1 %2 code=%3 %4").arg(req->requestMethod()).arg(QString::fromUtf8(req->requestUri())).arg(code).arg(body.size());
+		QString msg = QString("control: %1 %2 code=%3 %4").arg(req->requestMethod(), QString::fromUtf8(req->requestUri()), QString::number(code), QString::number(body.size()));
 		if(items > -1)
 			msg += QString(" items=%1").arg(items);
 
@@ -2057,6 +2107,7 @@ private slots:
 					log_debug("added ws session: %s", qPrintable(s->cid));
 				}
 
+				s->route = item.route;
 				s->channelPrefix = QString::fromUtf8(item.channelPrefix);
 				continue;
 			}
@@ -2155,7 +2206,6 @@ private slots:
 					i.cid = item.cid;
 					i.type = WsControlPacket::Item::Detach;
 					writeWsControlItem(i);
-					continue;
 				}
 				else if(cm.type == WsControlMessage::Session)
 				{
@@ -2168,6 +2218,52 @@ private slots:
 						s->meta[cm.metaName] = cm.metaValue;
 					else
 						s->meta.remove(cm.metaName);
+				}
+				else if(cm.type == WsControlMessage::KeepAlive)
+				{
+					WsControlPacket::Item i;
+					i.cid = item.cid;
+					i.type = WsControlPacket::Item::KeepAliveSetup;
+
+					if(!cm.content.isNull())
+					{
+						QString contentType;
+						switch(cm.messageType)
+						{
+							case WsControlMessage::Text:   contentType = "text"; break;
+							case WsControlMessage::Binary: contentType = "binary"; break;
+							case WsControlMessage::Ping:   contentType = "ping"; break;
+							case WsControlMessage::Pong:   contentType = "pong"; break;
+							default: continue; // unrecognized type, ignore
+						}
+
+						s->keepAliveType = contentType.toUtf8();
+						s->keepAliveMessage = cm.content;
+
+						i.timeout = (cm.timeout > 0 ? cm.timeout : DEFAULT_WS_KEEPALIVE_TIMEOUT);
+					}
+					else
+					{
+						s->keepAliveType.clear();
+						s->keepAliveMessage.clear();
+					}
+
+					writeWsControlItem(i);
+				}
+			}
+			else if(item.type == WsControlPacket::Item::NeedKeepAlive)
+			{
+				if(!s->keepAliveMessage.isNull())
+				{
+					WsControlPacket::Item i;
+					i.cid = s->cid.toUtf8();
+					i.type = WsControlPacket::Item::Send;
+					i.contentType = s->keepAliveType;
+					i.message = s->keepAliveMessage;
+
+					writeWsControlItem(i);
+
+					stats->addActivity(s->route.toUtf8(), 1);
 				}
 			}
 		}
@@ -2259,7 +2355,7 @@ private slots:
 
 	void controlHttpServer_requestReady()
 	{
-		HttpRequest *req = controlHttpServer->takeNext();
+		SimpleHttpRequest *req = controlHttpServer->takeNext();
 		if(!req)
 			return;
 

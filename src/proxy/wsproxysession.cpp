@@ -20,6 +20,7 @@
 #include "wsproxysession.h"
 
 #include <assert.h>
+#include <QTimer>
 #include <QDateTime>
 #include <QUrl>
 #include <QJsonDocument>
@@ -38,6 +39,7 @@
 #include "statsmanager.h"
 #include "inspectdata.h"
 #include "connectionmanager.h"
+#include "testwebsocket.h"
 
 #define ACTIVITY_TIMEOUT 60000
 
@@ -254,6 +256,7 @@ public:
 	QString subChannel;
 	QDateTime activityTime;
 	QByteArray publicCid;
+	QTimer *keepAliveTimer;
 
 	Private(WsProxySession *_q, ZRoutes *_zroutes, ConnectionManager *_connectionManager, StatsManager *_statsManager, WsControlManager *_wsControlManager) :
 		QObject(_q),
@@ -274,7 +277,8 @@ public:
 		outPendingBytes(0),
 		outReadInProgress(-1),
 		acceptGripMessages(false),
-		detached(false)
+		detached(false),
+		keepAliveTimer(0)
 	{
 	}
 
@@ -285,6 +289,8 @@ public:
 
 	void cleanup()
 	{
+		cleanupKeepAliveTimer();
+
 		cleanupInSock();
 
 		delete outSock;
@@ -307,6 +313,17 @@ public:
 			connectionManager->removeConnection(inSock);
 			delete inSock;
 			inSock = 0;
+		}
+	}
+
+	void cleanupKeepAliveTimer()
+	{
+		if(keepAliveTimer)
+		{
+			keepAliveTimer->disconnect(this);
+			keepAliveTimer->setParent(0);
+			keepAliveTimer->deleteLater();
+			keepAliveTimer = 0;
 		}
 	}
 
@@ -409,38 +426,48 @@ public:
 		subChannel = target.subChannel;
 
 		if(zhttpManager)
+		{
 			zroutes->removeRef(zhttpManager);
-
-		if(target.type == DomainMap::Target::Custom)
-		{
-			zhttpManager = zroutes->managerForRoute(target.zhttpRoute);
-			log_debug("wsproxysession: %p forwarding to %s", q, qPrintable(target.zhttpRoute.baseSpec));
-		}
-		else // Default
-		{
-			zhttpManager = zroutes->defaultManager();
-			log_debug("wsproxysession: %p forwarding to %s:%d", q, qPrintable(target.connectHost), target.connectPort);
+			zhttpManager = 0;
 		}
 
-		zroutes->addRef(zhttpManager);
-
-		if(target.overHttp)
+		if(target.type == DomainMap::Target::Test)
 		{
-			WebSocketOverHttp *woh = new WebSocketOverHttp(zhttpManager, this);
-			woh->setConnectionId(publicCid);
-			outSock = woh;
+			outSock = new TestWebSocket(this);
 		}
 		else
 		{
-			// websockets don't work with zhttp req mode
-			if(zhttpManager->clientUsesReq())
+			if(target.type == DomainMap::Target::Custom)
 			{
-				reject(502, "Bad Gateway", "Error while proxying to origin.");
-				return;
+				zhttpManager = zroutes->managerForRoute(target.zhttpRoute);
+				log_debug("wsproxysession: %p forwarding to %s", q, qPrintable(target.zhttpRoute.baseSpec));
+			}
+			else // Default
+			{
+				zhttpManager = zroutes->defaultManager();
+				log_debug("wsproxysession: %p forwarding to %s:%d", q, qPrintable(target.connectHost), target.connectPort);
 			}
 
-			outSock = zhttpManager->createSocket();
-			outSock->setParent(this);
+			zroutes->addRef(zhttpManager);
+
+			if(target.overHttp)
+			{
+				WebSocketOverHttp *woh = new WebSocketOverHttp(zhttpManager, this);
+				woh->setConnectionId(publicCid);
+				outSock = woh;
+			}
+			else
+			{
+				// websockets don't work with zhttp req mode
+				if(zhttpManager->clientUsesReq())
+				{
+					reject(502, "Bad Gateway", "Error while proxying to origin.");
+					return;
+				}
+
+				outSock = zhttpManager->createSocket();
+				outSock->setParent(this);
+			}
 		}
 
 		connect(outSock, SIGNAL(connected()), SLOT(out_connected()));
@@ -531,6 +558,8 @@ public:
 						f.data = f.data.mid(messagePrefix.size());
 						inSock->writeFrame(f);
 						inPendingBytes += f.data.size();
+
+						restartKeepAlive();
 					}
 					else if(f.type == WebSocket::Frame::Continuation)
 					{
@@ -538,12 +567,16 @@ public:
 
 						inSock->writeFrame(f);
 						inPendingBytes += f.data.size();
+
+						restartKeepAlive();
 					}
 				}
 				else
 				{
 					inSock->writeFrame(f);
 					inPendingBytes += f.data.size();
+
+					restartKeepAlive();
 				}
 
 				if(!f.more)
@@ -554,6 +587,8 @@ public:
 				// always relay non-content frames
 				inSock->writeFrame(f);
 				inPendingBytes += f.data.size();
+
+				restartKeepAlive();
 			}
 		}
 	}
@@ -584,7 +619,11 @@ public:
 	void logConnection(int responseCode, int responseBodySize)
 	{
 		QString targetStr;
-		if(target.type == DomainMap::Target::Custom)
+		if(target.type == DomainMap::Target::Test)
+		{
+			targetStr = "test";
+		}
+		else if(target.type == DomainMap::Target::Custom)
 		{
 			targetStr = (target.zhttpRoute.req ? "zhttpreq/" : "zhttp/") + target.zhttpRoute.baseSpec;
 		}
@@ -593,7 +632,7 @@ public:
 			targetStr = target.connectHost + ':' + QString::number(target.connectPort);
 		}
 
-		QString msg = QString("GET %1 -> %2").arg(inSock->requestUri().toString(QUrl::FullyEncoded)).arg(targetStr);
+		QString msg = QString("GET %1 -> %2").arg(inSock->requestUri().toString(QUrl::FullyEncoded), targetStr);
 		if(target.overHttp)
 			msg += "[http]";
 		QUrl ref = QUrl(QString::fromUtf8(inSock->requestHeaders().get("Referer")));
@@ -601,9 +640,15 @@ public:
 			msg += QString(" ref=%1").arg(ref.toString(QUrl::FullyEncoded));
 		if(!routeId.isEmpty())
 			msg += QString(" route=%1").arg(QString::fromUtf8(routeId));
-		msg += QString(" code=%1 %2").arg(responseCode).arg(responseBodySize);
+		msg += QString(" code=%1 %2").arg(QString::number(responseCode), QString::number(responseBodySize));
 
 		log_info("%s", qPrintable(msg));
+	}
+
+	void restartKeepAlive()
+	{
+		if(keepAliveTimer)
+			keepAliveTimer->start();
 	}
 
 private slots:
@@ -708,10 +753,12 @@ private slots:
 			if(wsControlManager)
 			{
 				wsControl = wsControlManager->createSession(publicCid);
-				connect(wsControl, SIGNAL(sendEventReceived(const QByteArray &, const QByteArray &)), SLOT(wsControl_sendEventReceived(const QByteArray &, const QByteArray &)));
+				connect(wsControl, SIGNAL(sendEventReceived(WebSocket::Frame::Type, const QByteArray &)), SLOT(wsControl_sendEventReceived(WebSocket::Frame::Type, const QByteArray &)));
+				connect(wsControl, SIGNAL(keepAliveSetupEventReceived(bool, int)), SLOT(wsControl_keepAliveSetupEventReceived(bool, int)));
+				connect(wsControl, SIGNAL(closeEventReceived(int)), SLOT(wsControl_closeEventReceived(int)));
 				connect(wsControl, SIGNAL(detachEventReceived()), SLOT(wsControl_detachEventReceived()));
 				connect(wsControl, SIGNAL(cancelEventReceived()), SLOT(wsControl_cancelEventReceived()));
-				wsControl->start(channelPrefix, inSock->requestUri());
+				wsControl->start(routeId, channelPrefix, inSock->requestUri());
 
 				if(!subChannel.isEmpty())
 				{
@@ -818,18 +865,50 @@ private slots:
 		}
 	}
 
-	void wsControl_sendEventReceived(const QByteArray &contentType, const QByteArray &message)
+	void wsControl_sendEventReceived(WebSocket::Frame::Type type, const QByteArray &message)
 	{
+		// this method accepts a full message, which must be typed
+		if(type == WebSocket::Frame::Continuation)
+			return;
+
 		// only send if we can, otherwise drop
 		if(inSock && inSock->canWrite())
 		{
-			if(contentType == "binary")
-				inSock->writeFrame(WebSocket::Frame(WebSocket::Frame::Binary, message, false));
-			else
-				inSock->writeFrame(WebSocket::Frame(WebSocket::Frame::Text, message, false));
+			inSock->writeFrame(WebSocket::Frame(type, message, false));
 
 			inPendingBytes += message.size();
 		}
+
+		restartKeepAlive();
+	}
+
+	void wsControl_keepAliveSetupEventReceived(bool enable, int timeout)
+	{
+		if(enable)
+		{
+			if(!keepAliveTimer)
+			{
+				keepAliveTimer = new QTimer(this);
+				connect(keepAliveTimer, SIGNAL(timeout()), SLOT(keepAliveTimer_timeout()));
+				keepAliveTimer->setSingleShot(true);
+			}
+
+			keepAliveTimer->setInterval(timeout * 1000);
+			keepAliveTimer->start();
+		}
+		else
+		{
+			cleanupKeepAliveTimer();
+		}
+	}
+
+	void wsControl_closeEventReceived(int code)
+	{
+		if(!detached && outSock && outSock->state() != WebSocket::Closing)
+			outSock->close();
+
+		if(inSock && inSock->state() != WebSocket::Closing)
+			inSock->close(code);
 	}
 
 	void wsControl_detachEventReceived()
@@ -857,9 +936,9 @@ private slots:
 		tryFinish();
 	}
 
-	void activity_timeout()
+	void keepAliveTimer_timeout()
 	{
-		// nothing to do
+		wsControl->sendNeedKeepAlive();
 	}
 };
 

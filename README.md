@@ -54,8 +54,8 @@ Pushpin eats the GRIP headers and switches to chunked encoding (notice there's n
 Data can then be pushed to the client by publishing data on the `test` channel:
 
 ```bash
-curl -d '{ "items": [ { "channel": "test", "http-stream": \
-    { "content": "hello there\n" } } ] }' \
+curl -d '{ "items": [ { "channel": "test", "formats": { "http-stream": \
+    { "content": "hello there\n" } } } ] }' \
     http://localhost:5561/publish
 ```
 
@@ -86,9 +86,8 @@ from django_grip import set_hold_stream
 def myendpoint(request):
     if request.method == 'GET':
         # subscribe every incoming request to a channel in stream mode
-        resp = HttpResponse('welcome to the stream\n', content_type='text/plain')
         set_hold_stream(request, 'test')
-        return resp
+        return HttpResponse('welcome to the stream\n', content_type='text/plain')
     ...
 ```
 
