@@ -1,3 +1,9 @@
+pushpin (1.10.0-1) unstable; urgency=medium
+
+  * New upstream version
+
+ -- Jan Niehusmann <jan@debian.org>  Fri, 27 May 2016 15:49:27 +0200
+
 pushpin (1.9.0-2) experimental; urgency=medium
 
   * Add systemd service file
