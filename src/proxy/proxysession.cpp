@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2015 Fanout, Inc.
+ * Copyright (C) 2012-2016 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -33,10 +33,12 @@
 #include "zhttpmanager.h"
 #include "zhttprequest.h"
 #include "zroutes.h"
+#include "statusreasons.h"
 #include "xffrule.h"
 #include "requestsession.h"
 #include "proxyutil.h"
 #include "acceptrequest.h"
+#include "testhttprequest.h"
 
 #define MAX_ACCEPT_REQUEST_BODY 100000
 #define MAX_ACCEPT_RESPONSE_BODY 100000
@@ -73,11 +75,13 @@ public:
 
 		RequestSession *rs;
 		State state;
+		bool unclean;
 		int bytesToWrite;
 
 		SessionItem() :
 			rs(0),
 			state(WaitingForResponse),
+			unclean(false),
 			bytesToWrite(0)
 		{
 		}
@@ -93,7 +97,7 @@ public:
 	DomainMap::Entry route;
 	QList<DomainMap::Target> targets;
 	DomainMap::Target target;
-	ZhttpRequest *zhttpRequest;
+	HttpRequest *zhttpRequest;
 	bool addAllowed;
 	bool haveInspectData;
 	InspectData idata;
@@ -101,9 +105,9 @@ public:
 	QSet<QByteArray> acceptContentTypes;
 	QSet<SessionItem*> sessionItems;
 	bool shared;
-	QByteArray outRid;
 	HttpRequestData requestData;
 	HttpResponseData responseData;
+	HttpResponseData acceptResponseData;
 	BufferList requestBody;
 	BufferList responseBody;
 	QHash<RequestSession*, SessionItem*> sessionItemsBySession;
@@ -121,6 +125,8 @@ public:
 	XffRule xffRule;
 	XffRule xffTrustedRule;
 	QList<QByteArray> origHeadersNeedMark;
+	bool proxyInitialResponse;
+	bool acceptAfterResponding;
 	AcceptRequest *acceptRequest;
 
 	Private(ProxySession *_q, ZRoutes *_zroutes, ZrpcManager *_acceptManager) :
@@ -142,6 +148,8 @@ public:
 		passToUpstream(false),
 		acceptXForwardedProtocol(false),
 		useXForwardedProtocol(false),
+		proxyInitialResponse(false),
+		acceptAfterResponding(false),
 		acceptRequest(0)
 	{
 		acceptHeaderPrefixes += "Grip-";
@@ -321,23 +329,34 @@ public:
 			uri.setHost(target.host);
 
 		if(zhttpManager)
+		{
 			zroutes->removeRef(zhttpManager);
-
-		if(target.type == DomainMap::Target::Custom)
-		{
-			zhttpManager = zroutes->managerForRoute(target.zhttpRoute);
-			log_debug("proxysession: %p forwarding to %s", q, qPrintable(target.zhttpRoute.baseSpec));
-		}
-		else // Default
-		{
-			zhttpManager = zroutes->defaultManager();
-			log_debug("proxysession: %p forwarding to %s:%d", q, qPrintable(target.connectHost), target.connectPort);
+			zhttpManager = 0;
 		}
 
-		zroutes->addRef(zhttpManager);
+		if(target.type == DomainMap::Target::Test)
+		{
+			zhttpRequest = new TestHttpRequest(this);
+		}
+		else
+		{
+			if(target.type == DomainMap::Target::Custom)
+			{
+				zhttpManager = zroutes->managerForRoute(target.zhttpRoute);
+				log_debug("proxysession: %p forwarding to %s", q, qPrintable(target.zhttpRoute.baseSpec));
+			}
+			else // Default
+			{
+				zhttpManager = zroutes->defaultManager();
+				log_debug("proxysession: %p forwarding to %s:%d", q, qPrintable(target.connectHost), target.connectPort);
+			}
 
-		zhttpRequest = zhttpManager->createRequest();
-		zhttpRequest->setParent(this);
+			zroutes->addRef(zhttpManager);
+
+			zhttpRequest = zhttpManager->createRequest();
+			zhttpRequest->setParent(this);
+		}
+
 		connect(zhttpRequest, SIGNAL(readyRead()), SLOT(zhttpRequest_readyRead()));
 		connect(zhttpRequest, SIGNAL(bytesWritten(int)), SLOT(zhttpRequest_bytesWritten(int)));
 		connect(zhttpRequest, SIGNAL(error()), SLOT(zhttpRequest_error()));
@@ -353,9 +372,6 @@ public:
 			zhttpRequest->setConnectHost(target.connectHost);
 			zhttpRequest->setConnectPort(target.connectPort);
 		}
-
-		ZhttpRequest::Rid rid = zhttpRequest->rid();
-		outRid = rid.first + ':' + rid.second;
 
 		zhttpRequest->start(requestData.method, uri, requestData.headers);
 
@@ -435,6 +451,12 @@ public:
 
 		foreach(SessionItem *si, sessionItems)
 		{
+			if(si->state == SessionItem::Paused)
+			{
+				si->state = SessionItem::WaitingForResponse;
+				si->rs->resume();
+			}
+
 			if(si->state != SessionItem::Errored)
 			{
 				assert(si->state == SessionItem::WaitingForResponse);
@@ -492,18 +514,22 @@ public:
 
 	void destroyAll()
 	{
-		// this method is only to be called when we are in Responding state
-		assert(state == Responding);
+		assert(state == Accepting || state == Responding);
 
 		state = Responded;
 
 		foreach(SessionItem *si, sessionItems)
 		{
-			assert(si->state != SessionItem::WaitingForResponse);
+			if(si->state == SessionItem::Paused)
+			{
+				si->state = SessionItem::Responding;
+				si->rs->resume();
+			}
 
-			if(si->state == SessionItem::Responding)
+			if(si->state == SessionItem::WaitingForResponse || si->state == SessionItem::Responding)
 			{
 				si->state = SessionItem::Responded;
+				si->unclean = true;
 				si->bytesToWrite = -1;
 				si->rs->endResponseBody();
 			}
@@ -604,8 +630,10 @@ public:
 					return;
 			}
 
-			if(state == Accepting)
+			if(state == Accepting || (state == Responding && acceptAfterResponding))
 			{
+				state = Accepting;
+
 				if(acceptManager)
 				{
 					log_debug("we have an acceptmanager");
@@ -616,7 +644,9 @@ public:
 					}
 				}
 				else
+				{
 					cannotAcceptAll();
+				}
 			}
 			else if(state == Responding)
 			{
@@ -641,7 +671,11 @@ public:
 		HttpRequestData rd = rs->requestData();
 
 		QString targetStr;
-		if(target.type == DomainMap::Target::Custom)
+		if(target.type == DomainMap::Target::Test)
+		{
+			targetStr = "test";
+		}
+		else if(target.type == DomainMap::Target::Custom)
 		{
 			targetStr = (target.zhttpRoute.req ? "zhttpreq/" : "zhttp/") + target.zhttpRoute.baseSpec;
 		}
@@ -650,7 +684,7 @@ public:
 			targetStr = target.connectHost + ':' + QString::number(target.connectPort);
 		}
 
-		QString msg = QString("%1 %2 -> %3").arg(rd.method).arg(rd.uri.toString(QUrl::FullyEncoded)).arg(targetStr);
+		QString msg = QString("%1 %2 -> %3").arg(rd.method, rd.uri.toString(QUrl::FullyEncoded), targetStr);
 
 		QUrl ref = QUrl(QString::fromUtf8(rd.headers.get("Referer")));
 		if(!ref.isEmpty())
@@ -659,16 +693,23 @@ public:
 		if(!route.id.isEmpty())
 			msg += QString(" route=%1").arg(QString::fromUtf8(route.id));
 
-		if(accepted)
-			msg += " hold";
+		HttpResponseData resp = rs->responseData();
+
+		if(resp.code != -1 && !si->unclean)
+		{
+			if(accepted)
+				msg += " hold";
+			else
+				msg += QString(" code=%1 %2").arg(QString::number(resp.code), QString::number(rs->responseBodySize()));
+		}
 		else
-			msg += QString(" code=%1 %2").arg(rs->responseData().code).arg(rs->responseBodySize());
+			msg += " error";
 
 		if(rs->isRetry())
 			msg += " retry";
 
 		if(shared)
-			msg += QString(" shared=%1").arg(QString::fromUtf8(outRid));
+			msg += QString().sprintf(" shared=%p", this);
 
 		log_info("%s", qPrintable(msg));
 	}
@@ -697,6 +738,8 @@ public slots:
 			responseData.headers = zhttpRequest->responseHeaders();
 			responseBody += zhttpRequest->readBody(MAX_INITIAL_BUFFER);
 
+			acceptResponseData = responseData;
+
 			total += responseBody.size();
 			log_debug("proxysession: %p recv total: %d", q, total);
 
@@ -714,19 +757,93 @@ public slots:
 				}
 				else
 				{
-					foreach(const HttpHeader &h, responseData.headers)
+					if(proxyInitialResponse && responseData.headers.get("Grip-Hold") == "stream")
 					{
-						foreach(const QByteArray &hp, acceptHeaderPrefixes)
+						// sending the initial response from the proxy means
+						//   we need to do some of the handler's job here
+
+						// NOTE: if we ever need to do more than what's
+						//   below, we should consider querying the handler
+						//   to perform these things while still letting
+						//   the proxy send the response body
+
+						// no content length
+						responseData.headers.removeAll("Content-Length");
+
+						// interpret grip-status
+						QByteArray statusHeader = responseData.headers.get("Grip-Status");
+						if(!statusHeader.isEmpty())
 						{
-							if(qstrnicmp(h.first.data(), hp.data(), hp.length()) == 0)
+							QByteArray codeStr;
+							QByteArray reason;
+
+							int at = statusHeader.indexOf(' ');
+							if(at != -1)
 							{
-								doAccept = true;
-								break;
+								codeStr = statusHeader.mid(0, at);
+								reason = statusHeader.mid(at + 1);
+							}
+							else
+							{
+								codeStr = statusHeader;
+							}
+
+							bool _ok;
+							responseData.code = codeStr.toInt(&_ok);
+							if(!_ok || responseData.code < 0 || responseData.code > 999)
+							{
+								// this may output a misleading error message
+								cannotAcceptAll();
+								return;
+							}
+
+							if(reason.isEmpty())
+								reason = StatusReasons::getReason(responseData.code);
+
+							responseData.reason = reason;
+						}
+
+						// strip any grip headers
+						for(int n = 0; n < responseData.headers.count(); ++n)
+						{
+							const HttpHeader &h = responseData.headers[n];
+
+							bool prefixed = false;
+							foreach(const QByteArray &hp, acceptHeaderPrefixes)
+							{
+								if(qstrnicmp(h.first.data(), hp.data(), hp.length()) == 0)
+								{
+									prefixed = true;
+									break;
+								}
+							}
+
+							if(prefixed)
+							{
+								responseData.headers.removeAt(n);
+								--n; // adjust position
 							}
 						}
 
-						if(doAccept)
-							break;
+						// we'll let the proxy send normally, then accept afterwards
+						acceptAfterResponding = true;
+					}
+					else
+					{
+						foreach(const HttpHeader &h, responseData.headers)
+						{
+							foreach(const QByteArray &hp, acceptHeaderPrefixes)
+							{
+								if(qstrnicmp(h.first.data(), hp.data(), hp.length()) == 0)
+								{
+									doAccept = true;
+									break;
+								}
+							}
+
+							if(doAccept)
+								break;
+						}
 					}
 				}
 			}
@@ -905,7 +1022,7 @@ public slots:
 		{
 			assert(!acceptRequest);
 
-			responseData.body = responseBody.take();
+			acceptResponseData.body = responseBody.take();
 
 			AcceptData adata;
 
@@ -920,6 +1037,7 @@ public slots:
 				areq.autoCrossOrigin = si->rs->autoCrossOrigin();
 				areq.jsonpCallback = si->rs->jsonpCallback();
 				areq.jsonpExtendedResponse = si->rs->jsonpExtendedResponse();
+				areq.responseCode = ss.responseCode;
 				areq.inSeq = ss.inSeq;
 				areq.outSeq = ss.outSeq;
 				areq.outCredits = ss.outCredits;
@@ -931,7 +1049,7 @@ public slots:
 			adata.requestData.body = requestBody.take();
 
 			adata.haveResponse = true;
-			adata.response = responseData;
+			adata.response = acceptResponseData;
 
 			if(haveInspectData)
 			{
@@ -944,6 +1062,7 @@ public slots:
 			adata.route = route.id;
 			adata.channelPrefix = route.prefix;
 			adata.useSession = route.session;
+			adata.responseSent = acceptAfterResponding;
 
 			acceptRequest = new AcceptRequest(acceptManager, this);
 			connect(acceptRequest, SIGNAL(finished()), SLOT(acceptRequest_finished()));
@@ -1007,17 +1126,28 @@ public slots:
 			}
 			else
 			{
-				// wake up receivers
-				foreach(SessionItem *si, sessionItems)
+				if(acceptAfterResponding)
 				{
-					si->state = SessionItem::WaitingForResponse;
-					si->rs->resume();
+					destroyAll();
 				}
-
-				if(rdata.response.code != -1)
-					respondAll(rdata.response.code, rdata.response.reason, rdata.response.headers, rdata.response.body);
 				else
-					cannotAcceptAll();
+				{
+					if(rdata.response.code != -1)
+					{
+						// wake up receivers
+						foreach(SessionItem *si, sessionItems)
+						{
+							si->state = SessionItem::WaitingForResponse;
+							si->rs->resume();
+						}
+
+						respondAll(rdata.response.code, rdata.response.reason, rdata.response.headers, rdata.response.body);
+					}
+					else
+					{
+						cannotAcceptAll();
+					}
+				}
 			}
 		}
 		else
@@ -1026,12 +1156,15 @@ public slots:
 			acceptRequest = 0;
 
 			// wake up receivers and reject
-			foreach(SessionItem *si, sessionItems)
+
+			if(acceptAfterResponding)
 			{
-				si->state = SessionItem::WaitingForResponse;
-				si->rs->resume();
+				destroyAll();
 			}
-			cannotAcceptAll();
+			else
+			{
+				cannotAcceptAll();
+			}
 		}
 	}
 };
@@ -1082,6 +1215,11 @@ void ProxySession::setXffRules(const XffRule &untrusted, const XffRule &trusted)
 void ProxySession::setOrigHeadersNeedMark(const QList<QByteArray> &names)
 {
 	d->origHeadersNeedMark = names;
+}
+
+void ProxySession::setProxyInitialResponseEnabled(bool enabled)
+{
+	d->proxyInitialResponse = enabled;
 }
 
 void ProxySession::setInspectData(const InspectData &idata)

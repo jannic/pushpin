@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014 Fanout, Inc.
+ * Copyright (C) 2014-2016 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -36,6 +36,7 @@ public:
 	WsControlManager *manager;
 	QByteArray cid;
 	QTimer *keepAliveTimer;
+	QByteArray route;
 	QByteArray channelPrefix;
 	QUrl uri;
 
@@ -80,6 +81,7 @@ public:
 
 		WsControlPacket::Item i;
 		i.type = WsControlPacket::Item::Here;
+		i.route = route;
 		i.channelPrefix = channelPrefix;
 		i.uri = uri;
 		i.ttl = SESSION_TTL;
@@ -94,6 +96,13 @@ public:
 		write(i);
 	}
 
+	void sendNeedKeepAlive()
+	{
+		WsControlPacket::Item i;
+		i.type = WsControlPacket::Item::NeedKeepAlive;
+		write(i);
+	}
+
 	void write(const WsControlPacket::Item &item)
 	{
 		WsControlPacket::Item out = item;
@@ -105,13 +114,28 @@ public:
 	{
 		if(item.type == WsControlPacket::Item::Send)
 		{
-			QByteArray contentType;
-			if(!item.contentType.isEmpty())
-				contentType = item.contentType;
+			WebSocket::Frame::Type type;
+			if(item.contentType == "binary")
+				type = WebSocket::Frame::Binary;
+			else if(item.contentType == "ping")
+				type = WebSocket::Frame::Ping;
+			else if(item.contentType == "pong")
+				type = WebSocket::Frame::Pong;
 			else
-				contentType = "text";
+				type = WebSocket::Frame::Text;
 
-			emit q->sendEventReceived(contentType, item.message);
+			emit q->sendEventReceived(type, item.message);
+		}
+		else if(item.type == WsControlPacket::Item::KeepAliveSetup)
+		{
+			if(item.timeout > 0)
+				emit q->keepAliveSetupEventReceived(true, item.timeout);
+			else
+				emit q->keepAliveSetupEventReceived(false);
+		}
+		else if(item.type == WsControlPacket::Item::Close)
+		{
+			emit q->closeEventReceived(item.code);
 		}
 		else if(item.type == WsControlPacket::Item::Detach)
 		{
@@ -144,8 +168,9 @@ WsControlSession::~WsControlSession()
 	delete d;
 }
 
-void WsControlSession::start(const QByteArray &channelPrefix, const QUrl &uri)
+void WsControlSession::start(const QByteArray &routeId, const QByteArray &channelPrefix, const QUrl &uri)
 {
+	d->route = routeId;
 	d->channelPrefix = channelPrefix;
 	d->uri = uri;
 	d->start();
@@ -154,6 +179,11 @@ void WsControlSession::start(const QByteArray &channelPrefix, const QUrl &uri)
 void WsControlSession::sendGripMessage(const QByteArray &message)
 {
 	d->sendGripMessage(message);
+}
+
+void WsControlSession::sendNeedKeepAlive()
+{
+	d->sendNeedKeepAlive();
 }
 
 void WsControlSession::setup(WsControlManager *manager, const QByteArray &cid)

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014 Fanout, Inc.
+ * Copyright (C) 2014-2016 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -22,6 +22,7 @@
 
 #include <QByteArray>
 #include <QObject>
+#include "websocket.h"
 #include "packet/wscontrolpacket.h"
 
 class QUri;
@@ -34,11 +35,14 @@ class WsControlSession : public QObject
 public:
 	~WsControlSession();
 
-	void start(const QByteArray &channelPrefix, const QUrl &uri);
+	void start(const QByteArray &routeId, const QByteArray &channelPrefix, const QUrl &uri);
 	void sendGripMessage(const QByteArray &message);
+	void sendNeedKeepAlive();
 
 signals:
-	void sendEventReceived(const QByteArray &contentType, const QByteArray &message);
+	void sendEventReceived(WebSocket::Frame::Type type, const QByteArray &message);
+	void keepAliveSetupEventReceived(bool enable, int timeout = -1);
+	void closeEventReceived(int code); // -1 for no code
 	void detachEventReceived();
 	void cancelEventReceived();
 

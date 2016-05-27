@@ -67,6 +67,7 @@ public:
 	int connectPort;
 	bool ignorePolicies;
 	bool ignoreTlsErrors;
+	bool sendBodyAfterAck;
 	QString requestMethod;
 	QUrl requestUri;
 	HttpHeaders requestHeaders;
@@ -86,8 +87,9 @@ public:
 	bool pausing;
 	bool paused;
 	bool pendingUpdate;
+	bool needPause;
 	bool errored;
-	ZhttpRequest::ErrorCondition errorCondition;
+	ErrorCondition errorCondition;
 	QTimer *expireTimer;
 	QTimer *keepAliveTimer;
 
@@ -101,6 +103,7 @@ public:
 		connectPort(-1),
 		ignorePolicies(false),
 		ignoreTlsErrors(false),
+		sendBodyAfterAck(false),
 		inSeq(0),
 		outSeq(0),
 		outCredits(0),
@@ -111,6 +114,7 @@ public:
 		pausing(false),
 		paused(false),
 		pendingUpdate(false),
+		needPause(false),
 		errored(false),
 		expireTimer(0),
 		keepAliveTimer(0)
@@ -133,6 +137,8 @@ public:
 
 	void cleanup()
 	{
+		needPause = false;
+
 		if(expireTimer)
 		{
 			expireTimer->disconnect(this);
@@ -223,7 +229,15 @@ public:
 			outCredits = ss.outCredits;
 		userData = ss.userData;
 
-		state = ServerResponseWait;
+		if(ss.responseCode != -1)
+		{
+			responseCode = ss.responseCode;
+			state = ServerResponding;
+		}
+		else
+		{
+			state = ServerResponseWait;
+		}
 
 		refreshTimeout();
 		startKeepAlive();
@@ -253,12 +267,13 @@ public:
 
 	void pause()
 	{
+		assert(!pausing && !paused);
 		assert(!doReq);
-		pausing = true;
 
-		ZhttpResponsePacket p;
-		p.type = ZhttpResponsePacket::HandoffStart;
-		writePacket(p);
+		pausing = true;
+		needPause = true;
+
+		update();
 	}
 
 	void resume()
@@ -335,6 +350,8 @@ public:
 
 	void tryWrite()
 	{
+		QPointer<QObject> self = this;
+
 		if(state == ClientRequesting)
 		{
 			// if all we have to send is EOF, we don't need credits for that
@@ -407,6 +424,23 @@ public:
 
 				emit q->bytesWritten(packet.body.size());
 			}
+		}
+
+		if(!self)
+			return;
+
+		trySendPause();
+	}
+
+	void trySendPause()
+	{
+		if(needPause && (state == ServerResponseWait || state == ServerResponding) && responseBodyBuf.isEmpty())
+		{
+			needPause = false;
+
+			ZhttpResponsePacket p;
+			p.type = ZhttpResponsePacket::HandoffStart;
+			writePacket(p);
 		}
 	}
 
@@ -821,7 +855,7 @@ public slots:
 				{
 					state = Stopped;
 					errored = true;
-					errorCondition = ZhttpRequest::ErrorRequestTooLarge;
+					errorCondition = ErrorRequestTooLarge;
 					cleanup();
 					emit q->error();
 					return;
@@ -858,23 +892,26 @@ public slots:
 				{
 					state = Stopped;
 					errored = true;
-					errorCondition = ZhttpRequest::ErrorUnavailable;
+					errorCondition = ErrorUnavailable;
 					cleanup();
 					emit q->error();
 					return;
 				}
-
-				// even though we don't have credits yet, we can act
-				//   like we do on the first packet. we'll still cap
-				//   our potential size though.
-				QByteArray buf = requestBodyBuf.take(IDEAL_CREDITS);
 
 				ZhttpRequestPacket p;
 				p.type = ZhttpRequestPacket::Data;
 				p.method = requestMethod;
 				p.uri = requestUri;
 				p.headers = requestHeaders;
-				p.body = buf;
+
+				if(!sendBodyAfterAck)
+				{
+					// even though we don't have credits yet, we can act
+					//   like we do on the first packet. we'll still cap
+					//   our potential size though.
+					p.body = requestBodyBuf.take(IDEAL_CREDITS);
+				}
+
 				if(!requestBodyBuf.isEmpty() || !bodyFinished)
 					p.more = true;
 				p.stream = true;
@@ -926,6 +963,10 @@ public slots:
 
 			emit q->readyRead();
 		}
+		else if(state == ServerResponseWait)
+		{
+			trySendPause();
+		}
 		else if(state == ServerResponseStarting)
 		{
 			state = ServerResponding;
@@ -946,10 +987,17 @@ public slots:
 				cleanup();
 			}
 
+			QPointer<QObject> self = this;
+
 			if(!packet.body.isEmpty())
 				emit q->bytesWritten(packet.body.size());
 			else if(!packet.more)
 				emit q->bytesWritten(0);
+
+			if(!self)
+				return;
+
+			trySendPause();
 		}
 		else if(state == ServerResponding)
 		{
@@ -963,7 +1011,7 @@ public slots:
 
 		state = Stopped;
 		errored = true;
-		errorCondition = ZhttpRequest::ErrorTimeout;
+		errorCondition = ErrorTimeout;
 		cleanup();
 		emit q->error();
 	}
@@ -986,7 +1034,7 @@ public slots:
 };
 
 ZhttpRequest::ZhttpRequest(QObject *parent) :
-	QObject(parent)
+	HttpRequest(parent)
 {
 	d = new Private(this);
 }
@@ -1029,6 +1077,11 @@ void ZhttpRequest::setIgnoreTlsErrors(bool on)
 void ZhttpRequest::setIsTls(bool on)
 {
 	d->requestUri.setScheme(on ? "https" : "http");
+}
+
+void ZhttpRequest::setSendBodyAfterAcknowledgement(bool on)
+{
+	d->sendBodyAfterAck = on;
 }
 
 void ZhttpRequest::start(const QString &method, const QUrl &uri, const HttpHeaders &headers)
@@ -1081,6 +1134,8 @@ ZhttpRequest::ServerState ZhttpRequest::serverState() const
 	ss.requestMethod = d->requestMethod;
 	ss.requestUri = d->requestUri;
 	ss.requestHeaders = d->requestHeaders;
+	if(d->state == Private::ServerResponding)
+		ss.responseCode = d->responseCode;
 	ss.inSeq = d->inSeq;
 	ss.outSeq = d->outSeq;
 	ss.outCredits = d->outCredits;
@@ -1127,7 +1182,7 @@ bool ZhttpRequest::isErrored() const
 	return d->errored;
 }
 
-ZhttpRequest::ErrorCondition ZhttpRequest::errorCondition() const
+HttpRequest::ErrorCondition ZhttpRequest::errorCondition() const
 {
 	return d->errorCondition;
 }

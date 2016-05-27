@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Fanout, Inc.
+ * Copyright (C) 2015-2016 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -17,7 +17,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "httpserver.h"
+#include "simplehttpserver.h"
 
 #include <assert.h>
 #include <QTcpSocket>
@@ -28,7 +28,7 @@
 #define MAX_HEADERS_SIZE 10000
 #define MAX_BODY_SIZE 1000000
 
-class HttpRequest::Private : public QObject
+class SimpleHttpRequest::Private : public QObject
 {
 	Q_OBJECT
 
@@ -42,7 +42,7 @@ public:
 		Closing
 	};
 
-	HttpRequest *q;
+	SimpleHttpRequest *q;
 	QTcpSocket *sock;
 	State state;
 	QByteArray inBuf;
@@ -54,7 +54,7 @@ public:
 	int contentLength;
 	int pendingWritten;
 
-	Private(HttpRequest *_q) :
+	Private(SimpleHttpRequest *_q) :
 		QObject(_q),
 		q(_q),
 		sock(0),
@@ -216,18 +216,9 @@ private:
 
 	void processIn()
 	{
-		QByteArray buf = sock->readAll();
-
 		if(state == ReadHeader)
 		{
-			if(inBuf.size() + buf.size() > MAX_HEADERS_SIZE)
-			{
-				inBuf.clear();
-				respondBadRequest("Request header too large.");
-				return;
-			}
-
-			inBuf += buf;
+			inBuf += sock->read(MAX_HEADERS_SIZE - inBuf.size());
 
 			// look for double newline
 			int at = -1;
@@ -305,10 +296,16 @@ private:
 					emit ready();
 				}
 			}
+			else if(inBuf.size() >= MAX_HEADERS_SIZE)
+			{
+				inBuf.clear();
+				respondBadRequest("Request header too large.");
+				return;
+			}
 		}
 		else if(state == ReadBody)
 		{
-			reqBody += buf;
+			reqBody += sock->read(MAX_BODY_SIZE - reqBody.size() + 1);
 
 			if(reqBody.size() > contentLength)
 			{
@@ -354,65 +351,65 @@ private slots:
 	}
 };
 
-HttpRequest::HttpRequest(QObject *parent) :
+SimpleHttpRequest::SimpleHttpRequest(QObject *parent) :
 	QObject(parent)
 {
 	d = new Private(this);
 }
 
-HttpRequest::~HttpRequest()
+SimpleHttpRequest::~SimpleHttpRequest()
 {
 	delete d;
 }
 
-QString HttpRequest::requestMethod() const
+QString SimpleHttpRequest::requestMethod() const
 {
 	return d->method;
 }
 
-QByteArray HttpRequest::requestUri() const
+QByteArray SimpleHttpRequest::requestUri() const
 {
 	return d->uri;
 }
 
-HttpHeaders HttpRequest::requestHeaders() const
+HttpHeaders SimpleHttpRequest::requestHeaders() const
 {
 	return d->reqHeaders;
 }
 
-QByteArray HttpRequest::requestBody() const
+QByteArray SimpleHttpRequest::requestBody() const
 {
 	return d->reqBody;
 }
 
-void HttpRequest::respond(int code, const QByteArray &reason, const HttpHeaders &headers, const QByteArray &body)
+void SimpleHttpRequest::respond(int code, const QByteArray &reason, const HttpHeaders &headers, const QByteArray &body)
 {
 	d->respond(code, reason, headers, body);
 }
 
-void HttpRequest::respond(int code, const QByteArray &reason, const QString &body)
+void SimpleHttpRequest::respond(int code, const QByteArray &reason, const QString &body)
 {
 	d->respond(code, reason, body);
 }
 
-class HttpServerPrivate : public QObject
+class SimpleHttpServerPrivate : public QObject
 {
 	Q_OBJECT
 
 public:
-	HttpServer *q;
+	SimpleHttpServer *q;
 	QTcpServer *server;
-	QSet<HttpRequest*> accepting;
-	QList<HttpRequest*> pending;
+	QSet<SimpleHttpRequest*> accepting;
+	QList<SimpleHttpRequest*> pending;
 
-	HttpServerPrivate(HttpServer *_q) :
+	SimpleHttpServerPrivate(SimpleHttpServer *_q) :
 		QObject(_q),
 		q(_q),
 		server(0)
 	{
 	}
 
-	~HttpServerPrivate()
+	~SimpleHttpServerPrivate()
 	{
 		qDeleteAll(pending);
 		qDeleteAll(accepting);
@@ -435,7 +432,7 @@ private slots:
 	void server_newConnection()
 	{
 		QTcpSocket *sock = server->nextPendingConnection();
-		HttpRequest *req = new HttpRequest;
+		SimpleHttpRequest *req = new SimpleHttpRequest;
 		connect(req->d, SIGNAL(ready()), SLOT(req_ready()));
 		connect(req, SIGNAL(finished()), SLOT(req_finished()));
 		accepting += req;
@@ -444,8 +441,8 @@ private slots:
 
 	void req_ready()
 	{
-		HttpRequest::Private *reqd = (HttpRequest::Private *)sender();
-		HttpRequest *req = reqd->q;
+		SimpleHttpRequest::Private *reqd = (SimpleHttpRequest::Private *)sender();
+		SimpleHttpRequest *req = reqd->q;
 		accepting.remove(req);
 		pending += req;
 		emit q->requestReady();
@@ -453,34 +450,34 @@ private slots:
 
 	void req_finished()
 	{
-		HttpRequest *req = (HttpRequest *)sender();
+		SimpleHttpRequest *req = (SimpleHttpRequest *)sender();
 		accepting.remove(req);
 		pending.removeAll(req);
 		delete req;
 	}
 };
 
-HttpServer::HttpServer(QObject *parent) :
+SimpleHttpServer::SimpleHttpServer(QObject *parent) :
 	QObject(parent)
 {
-	d = new HttpServerPrivate(this);
+	d = new SimpleHttpServerPrivate(this);
 }
 
-HttpServer::~HttpServer()
+SimpleHttpServer::~SimpleHttpServer()
 {
 	delete d;
 }
 
-bool HttpServer::listen(const QHostAddress &addr, int port)
+bool SimpleHttpServer::listen(const QHostAddress &addr, int port)
 {
 	return d->listen(addr, port);
 }
 
-HttpRequest *HttpServer::takeNext()
+SimpleHttpRequest *SimpleHttpServer::takeNext()
 {
 	if(!d->pending.isEmpty())
 	{
-		HttpRequest *req = d->pending.takeFirst();
+		SimpleHttpRequest *req = d->pending.takeFirst();
 		req->disconnect(d);
 		return req;
 	}
@@ -488,4 +485,4 @@ HttpRequest *HttpServer::takeNext()
 		return 0;
 }
 
-#include "httpserver.moc"
+#include "simplehttpserver.moc"

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2015 Fanout, Inc.
+ * Copyright (C) 2012-2016 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -285,7 +285,7 @@ public:
 
 		if(!config.appVersion.isEmpty() && config.updatesCheck)
 		{
-			new Updater(config.appVersion, zroutes->defaultManager(), this);
+			new Updater(config.appVersion, config.organizationName, zroutes->defaultManager(), this);
 		}
 
 		// init zroutes
@@ -334,6 +334,7 @@ public:
 			ps->setUseXForwardedProtocol(config.useXForwardedProtocol);
 			ps->setXffRules(config.xffUntrustedRule, config.xffTrustedRule);
 			ps->setOrigHeadersNeedMark(config.origHeadersNeedMark);
+			ps->setProxyInitialResponseEnabled(true);
 
 			if(idata)
 				ps->setInspectData(*idata);
@@ -494,6 +495,33 @@ public:
 		tryTakeSockJsSession();
 	}
 
+	void logFinished(RequestSession *rs, bool accepted = false)
+	{
+		HttpRequestData rd = rs->requestData();
+		DomainMap::Entry e = rs->route();
+
+		QString msg = QString("%1 %2").arg(rd.method, rd.uri.toString(QUrl::FullyEncoded));
+		QUrl ref = QUrl(QString::fromUtf8(rd.headers.get("Referer")));
+		if(!ref.isEmpty())
+			msg += QString(" ref=%1").arg(ref.toString(QUrl::FullyEncoded));
+		if(!e.id.isEmpty())
+			msg += QString(" route=%1").arg(QString::fromUtf8(e.id));
+
+		HttpResponseData resp = rs->responseData();
+
+		if(resp.code != -1)
+		{
+			if(accepted)
+				msg += " hold";
+			else
+				msg += QString(" code=%1 %2").arg(QString::number(resp.code), QString::number(rs->responseBodySize()));
+		}
+		else
+			msg += " error";
+
+		log_info("%s", qPrintable(msg));
+	}
+
 private slots:
 	void zhttpIn_requestReady()
 	{
@@ -533,6 +561,8 @@ private slots:
 	{
 		RequestSession *rs = (RequestSession *)sender();
 
+		logFinished(rs);
+
 		if(stats)
 			stats->removeConnection(ridToString(rs->rid()), false);
 
@@ -546,17 +576,7 @@ private slots:
 	{
 		RequestSession *rs = (RequestSession *)sender();
 
-		HttpRequestData rd = rs->requestData();
-		DomainMap::Entry e = rs->route();
-
-		QString msg = QString("%1 %2").arg(rd.method).arg(rd.uri.toString(QUrl::FullyEncoded));
-		QUrl ref = QUrl(QString::fromUtf8(rd.headers.get("Referer")));
-		if(!ref.isEmpty())
-			msg += QString(" ref=%1").arg(ref.toString(QUrl::FullyEncoded));
-		if(!e.id.isEmpty())
-			msg += QString(" route=%1").arg(QString::fromUtf8(e.id));
-		msg += " int";
-		log_info("%s", qPrintable(msg));
+		logFinished(rs, true);
 
 		if(stats)
 		{
