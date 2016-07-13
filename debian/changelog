@@ -1,9 +1,9 @@
-pushpin (1.11.0-1) UNRELEASED; urgency=medium
+pushpin (1.11.0-1) unstable; urgency=medium
 
   * New upstream version
   * Remove dependencies on python-setproctitle, python-jinja2, python
 
- -- Jan Niehusmann <jan@debian.org>  Tue, 12 Jul 2016 14:56:48 +0200
+ -- Jan Niehusmann <jan@debian.org>  Wed, 13 Jul 2016 10:15:54 +0200
 
 pushpin (1.10.1-1) unstable; urgency=medium
 
