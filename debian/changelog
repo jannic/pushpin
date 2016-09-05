@@ -4,6 +4,9 @@ pushpin (1.12.0-1) UNRELEASED; urgency=medium
   * Don't install generated Makefiles with examples.
     They contain paths from the build environment, which are not
     valid after installation, and break reproducible builds.
+  * Remove CHANGELOG.md from debian/docs. File gets installed by
+    dh_installchangelogs, so including it in docs results in a duplicate
+    file. (Fixes lintian warning "duplicate-changelog-files")
 
  -- Jan Niehusmann <jan@debian.org>  Sun, 04 Sep 2016 22:23:25 +0200
 
