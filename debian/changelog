@@ -1,10 +1,10 @@
-pushpin (1.12.0-2) UNRELEASED; urgency=medium
+pushpin (1.12.0-2) unstable; urgency=medium
 
   * Set INSTALL_ROOT when calling dh_auto_install. (Closes: Bug#841580)
   * Depend on lsb-base (>= 3.0-6) to fix lintian warning
     init.d-script-needs-depends-on-lsb-base
 
- -- Jan Niehusmann <jan@debian.org>  Fri, 21 Oct 2016 17:50:11 +0200
+ -- Jan Niehusmann <jan@debian.org>  Fri, 21 Oct 2016 17:56:34 +0200
 
 pushpin (1.12.0-1) unstable; urgency=medium
 
