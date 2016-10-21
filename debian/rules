@@ -22,7 +22,7 @@ override_dh_auto_configure:
 	./configure --prefix=/usr --qtselect=5 --configdir=/etc --extraconf="$$QMAKE_BUILDFLAGS" --verbose
 
 override_dh_auto_install:
-	dh_auto_install
+	dh_auto_install -- INSTALL_ROOT="$(CURDIR)/debian/pushpin"
 	mkdir -p debian/pushpin/var/log/pushpin
 
 override_dh_installexamples:
