@@ -1,3 +1,10 @@
+pushpin (1.14.0-2) UNRELEASED; urgency=medium
+
+  * Fix build on GNU Hurd.
+    (GNU Hurd doesn't define PATH_MAX)
+
+ -- Jan Niehusmann <jan@debian.org>  Thu, 17 Nov 2016 20:13:20 +0100
+
 pushpin (1.14.0-1) unstable; urgency=medium
 
   * New upstream version
