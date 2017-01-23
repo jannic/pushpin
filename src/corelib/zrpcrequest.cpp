@@ -34,12 +34,14 @@ class ZrpcRequest::Private : public QObject
 public:
 	ZrpcRequest *q;
 	ZrpcManager *manager;
+	QList<QByteArray> reqHeaders;
 	QByteArray id;
 	QString method;
 	QVariantHash args;
 	bool success;
 	QVariant result;
 	ErrorCondition condition;
+	QByteArray conditionString;
 	QTimer *timer;
 
 	Private(ZrpcRequest *_q) :
@@ -80,7 +82,7 @@ public:
 		p.id = id;
 		p.success = true;
 		p.value = value;
-		manager->write(p);
+		manager->write(reqHeaders, p);
 	}
 
 	void respondError(const QByteArray &condition, const QVariant &value)
@@ -90,11 +92,12 @@ public:
 		p.success = false;
 		p.condition = condition;
 		p.value = value;
-		manager->write(p);
+		manager->write(reqHeaders, p);
 	}
 
-	void handle(const ZrpcRequestPacket &packet)
+	void handle(const QList<QByteArray> &headers, const ZrpcRequestPacket &packet)
 	{
+		reqHeaders = headers;
 		id = packet.id;
 		method = packet.method;
 		args = packet.args;
@@ -117,6 +120,8 @@ public:
 			else
 				condition = ErrorGeneric;
 
+			conditionString = packet.condition;
+
 			result = packet.value;
 			q->onError();
 		}
@@ -131,6 +136,7 @@ private slots:
 		{
 			success = false;
 			condition = ErrorUnavailable;
+			conditionString = "service-unavailable";
 			cleanup();
 			emit q->finished();
 			return;
@@ -156,6 +162,7 @@ private slots:
 	{
 		success = false;
 		condition = ErrorTimeout;
+		conditionString = "timeout";
 		cleanup();
 		emit q->finished();
 	}
@@ -209,6 +216,11 @@ ZrpcRequest::ErrorCondition ZrpcRequest::errorCondition() const
 	return d->condition;
 }
 
+QByteArray ZrpcRequest::errorConditionString() const
+{
+	return d->conditionString;
+}
+
 void ZrpcRequest::start(const QString &method, const QVariantHash &args)
 {
 	d->method = method;
@@ -255,11 +267,11 @@ void ZrpcRequest::setupServer(ZrpcManager *manager)
 	d->manager = manager;
 }
 
-void ZrpcRequest::handle(const ZrpcRequestPacket &packet)
+void ZrpcRequest::handle(const QList<QByteArray> &headers, const ZrpcRequestPacket &packet)
 {
 	assert(d->manager);
 
-	d->handle(packet);
+	d->handle(headers, packet);
 }
 
 void ZrpcRequest::handle(const ZrpcResponsePacket &packet)

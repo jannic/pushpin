@@ -49,6 +49,7 @@ public:
 	bool success() const;
 	QVariant result() const;
 	ErrorCondition errorCondition() const;
+	QByteArray errorConditionString() const;
 
 	void start(const QString &method, const QVariantHash &args = QVariantHash());
 	void respond(const QVariant &result = QVariant());
@@ -71,7 +72,7 @@ private:
 	ZrpcRequest(QObject *parent = 0);
 	void setupClient(ZrpcManager *manager);
 	void setupServer(ZrpcManager *manager);
-	void handle(const ZrpcRequestPacket &packet);
+	void handle(const QList<QByteArray> &headers, const ZrpcRequestPacket &packet);
 	void handle(const ZrpcResponsePacket &packet);
 };
 

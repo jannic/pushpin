@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2017 Fanout, Inc.
+ * Copyright (C) 2016 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -17,22 +17,17 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef CONTROLREQUEST_H
-#define CONTROLREQUEST_H
+#ifndef FILTERS_H
+#define FILTERS_H
 
-#include "cidset.h"
+#include <QString>
+#include <QStringList>
+#include <QHash>
 
-class QObject;
+namespace Filters {
 
-class ZrpcManager;
-class StatsPacket;
-class Deferred;
-
-namespace ControlRequest {
-
-Deferred *connCheck(ZrpcManager *controlClient, const CidSet &cids, QObject *parent = 0);
-Deferred *refresh(ZrpcManager *controlClient, const QByteArray &cid, QObject *parent = 0);
-Deferred *report(ZrpcManager *controlClient, const StatsPacket &packet, QObject *parent = 0);
+// returns true to send and false to drop
+bool applyFilters(const QHash<QString, QString> &subscriptionMeta, const QHash<QString, QString> &publishMeta, const QStringList &filters);
 
 }
 

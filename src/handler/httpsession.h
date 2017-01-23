@@ -23,6 +23,7 @@
 #include <QObject>
 #include "packet/httprequestdata.h"
 #include "packet/httpresponsedata.h"
+#include "inspectdata.h"
 #include "zhttprequest.h"
 #include "instruct.h"
 
@@ -33,6 +34,7 @@ class PublishItem;
 class RateLimiter;
 class PublishLastIds;
 class HttpSessionUpdateManager;
+class RetryRequestPacket;
 
 class HttpSession : public QObject
 {
@@ -44,6 +46,7 @@ public:
 	public:
 		QHostAddress peerAddress;
 		bool debug;
+		bool isRetry;
 		bool autoCrossOrigin;
 		QByteArray jsonpCallback;
 		bool jsonpExtendedResponse;
@@ -55,10 +58,17 @@ public:
 		bool trusted;
 		bool responseSent;
 		QString sid;
+		bool haveInspectInfo;
+		InspectData inspectInfo;
 
 		AcceptData() :
+			debug(false),
+			isRetry(false),
+			autoCrossOrigin(false),
+			jsonpExtendedResponse(false),
 			trusted(false),
-			responseSent(false)
+			responseSent(false),
+			haveInspectInfo(false)
 		{
 		}
 	};
@@ -69,10 +79,12 @@ public:
 	Instruct::HoldMode holdMode() const;
 	ZhttpRequest::Rid rid() const;
 	QUrl requestUri() const;
+	bool isRetry() const;
 	QString route() const;
 	QString sid() const;
 	QHash<QString, Instruct::Channel> channels() const;
 	QHash<QString, QString> meta() const;
+	RetryRequestPacket retryPacket() const;
 
 	void start();
 	void update();

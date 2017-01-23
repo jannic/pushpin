@@ -48,10 +48,14 @@ public:
 	// routeId may be empty for non-identified route
 
 	void addActivity(const QByteArray &routeId, int count = 1);
-	void addMessage(const QString &channel, const QString &itemId, const QString &transport, int count = 1);
+	void addMessage(const QString &channel, const QString &itemId, const QString &transport, int count = 1, int blocks = -1);
 
 	void addConnection(const QByteArray &id, const QByteArray &routeId, ConnectionType type, const QHostAddress &peerAddress, bool ssl, bool quiet);
 	void removeConnection(const QByteArray &id, bool linger);
+
+	// manager automatically refreshes, but it may be useful to force a
+	//   send before removing with linger
+	void refreshConnection(const QByteArray &id);
 
 	void addSubscription(const QString &mode, const QString &channel);
 
@@ -59,8 +63,8 @@ public:
 	void removeSubscription(const QString &mode, const QString &channel, bool linger);
 
 	// for reporting only
-	void addMessageReceived(const QByteArray &routeId);
-	void addMessageSent(const QByteArray &routeId, const QString &transport);
+	void addMessageReceived(const QByteArray &routeId, int blocks = -1);
+	void addMessageSent(const QByteArray &routeId, const QString &transport, int blocks = -1);
 
 	bool checkConnection(const QByteArray &id);
 

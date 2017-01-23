@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014-2016 Fanout, Inc.
+ * Copyright (C) 2014-2017 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -20,10 +20,13 @@
 #include "wscontrolsession.h"
 
 #include <assert.h>
+#include <QTimer>
+#include <QDateTime>
 #include <QUrl>
 #include "wscontrolmanager.h"
 
 #define SESSION_TTL 60
+#define REQUEST_TIMEOUT 8000
 
 class WsControlSession::Private : public QObject
 {
@@ -32,6 +35,10 @@ class WsControlSession::Private : public QObject
 public:
 	WsControlSession *q;
 	WsControlManager *manager;
+	int nextReqId;
+	QHash<int, qint64> pendingRequests;
+	QList<QByteArray> pendingSendEventWrites;
+	QTimer *requestTimer;
 	QByteArray cid;
 	QByteArray route;
 	QByteArray channelPrefix;
@@ -40,13 +47,21 @@ public:
 	Private(WsControlSession *_q) :
 		QObject(_q),
 		q(_q),
-		manager(0)
+		manager(0),
+		nextReqId(0)
 	{
+		requestTimer = new QTimer(this);
+		requestTimer->setSingleShot(true);
+		connect(requestTimer, &QTimer::timeout, this, &Private::requestTimer_timeout);
 	}
 
 	~Private()
 	{
 		cleanup();
+
+		requestTimer->setParent(0);
+		requestTimer->disconnect(this);
+		requestTimer->deleteLater();
 	}
 
 	void cleanup()
@@ -77,11 +92,44 @@ public:
 		write(i);
 	}
 
+	void setupRequestTimer()
+	{
+		if(!pendingRequests.isEmpty())
+		{
+			// find next expiring request
+			qint64 lowestTime = -1;
+			QHashIterator<int, qint64> it(pendingRequests);
+			while(it.hasNext())
+			{
+				it.next();
+				qint64 time = it.value();
+
+				if(lowestTime == -1 || time < lowestTime)
+					lowestTime = time;
+			}
+
+			int until = int(lowestTime - QDateTime::currentMSecsSinceEpoch());
+
+			requestTimer->start(qMax(until, 0));
+		}
+		else
+		{
+			requestTimer->stop();
+		}
+	}
+
 	void sendGripMessage(const QByteArray &message)
 	{
+		int reqId = nextReqId++;
+
 		WsControlPacket::Item i;
 		i.type = WsControlPacket::Item::Grip;
+		i.requestId = QByteArray::number(reqId);
 		i.message = message;
+
+		pendingRequests[reqId] = QDateTime::currentMSecsSinceEpoch() + REQUEST_TIMEOUT;
+		setupRequestTimer();
+
 		write(i);
 	}
 
@@ -101,6 +149,18 @@ public:
 
 	void handle(const WsControlPacket::Item &item)
 	{
+		if(item.type != WsControlPacket::Item::Ack && !item.requestId.isEmpty())
+		{
+			// ack non-sends immediately
+			if(item.type != WsControlPacket::Item::Send)
+			{
+				WsControlPacket::Item i;
+				i.type = WsControlPacket::Item::Ack;
+				i.requestId = item.requestId;
+				write(i);
+			}
+		}
+
 		if(item.type == WsControlPacket::Item::Send)
 		{
 			WebSocket::Frame::Type type;
@@ -113,7 +173,14 @@ public:
 			else
 				type = WebSocket::Frame::Text;
 
-			emit q->sendEventReceived(type, item.message);
+			// for sends, don't ack until written
+
+			if(!item.requestId.isEmpty())
+				pendingSendEventWrites += item.requestId;
+			else
+				pendingSendEventWrites += QByteArray(); // placeholder
+
+			emit q->sendEventReceived(type, item.message, item.queue);
 		}
 		else if(item.type == WsControlPacket::Item::KeepAliveSetup)
 		{
@@ -134,6 +201,39 @@ public:
 		{
 			emit q->cancelEventReceived();
 		}
+		else if(item.type == WsControlPacket::Item::Ack)
+		{
+			int reqId = item.requestId.toInt();
+			if(pendingRequests.contains(reqId))
+			{
+				pendingRequests.remove(reqId);
+				setupRequestTimer();
+			}
+		}
+	}
+
+	void sendEventWritten()
+	{
+		assert(!pendingSendEventWrites.isEmpty());
+
+		QByteArray requestId = pendingSendEventWrites.takeFirst();
+		if(!requestId.isNull())
+		{
+			WsControlPacket::Item i;
+			i.type = WsControlPacket::Item::Ack;
+			i.requestId = requestId;
+			write(i);
+		}
+	}
+
+private slots:
+	void requestTimer_timeout()
+	{
+		// on error, destroy any other pending requests
+		pendingRequests.clear();
+		setupRequestTimer();
+
+		emit q->error();
 	}
 };
 
@@ -176,6 +276,11 @@ void WsControlSession::setup(WsControlManager *manager, const QByteArray &cid)
 	d->manager = manager;
 	d->cid = cid;
 	d->manager->link(this, d->cid);
+}
+
+void WsControlSession::sendEventWritten()
+{
+	d->sendEventWritten();
 }
 
 void WsControlSession::handle(const WsControlPacket::Item &item)

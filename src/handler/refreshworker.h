@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014-2017 Fanout, Inc.
+ * Copyright (C) 2017 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -17,62 +17,30 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef WSCONTROLPACKET_H
-#define WSCONTROLPACKET_H
+#ifndef REFRESHWORKER_H
+#define REFRESHWORKER_H
 
 #include <QByteArray>
-#include <QList>
-#include <QVariant>
-#include <QUrl>
+#include "deferred.h"
 
-class WsControlPacket
+class ZrpcRequest;
+class ZrpcManager;
+class StatsManager;
+
+class RefreshWorker : public Deferred
 {
+	Q_OBJECT
+
 public:
-	class Item
-	{
-	public:
-		enum Type
-		{
-			Here,
-			KeepAlive,
-			Gone,
-			Grip,
-			NeedKeepAlive,
-			Cancel,
-			Send,
-			KeepAliveSetup,
-			Close,
-			Detach,
-			Ack
-		};
+	RefreshWorker(ZrpcRequest *req, ZrpcManager *proxyControlClient, QObject *parent = 0);
 
-		QByteArray cid;
-		Type type;
-		QByteArray requestId;
-		QUrl uri;
-		QByteArray contentType;
-		QByteArray message;
-		bool queue;
-		int code;
-		QByteArray route;
-		QByteArray channelPrefix;
-		int ttl;
-		int timeout;
+private:
+	ZrpcRequest *req_;
 
-		Item() :
-			type((Type)-1),
-			queue(false),
-			code(-1),
-			ttl(-1),
-			timeout(-1)
-		{
-		}
-	};
+	void respondError(const QByteArray &condition);
 
-	QList<Item> items;
-
-	QVariant toVariant() const;
-	bool fromVariant(const QVariant &in);
+private slots:
+	void proxyRefresh_finished(const DeferredResult &result);
 };
 
 #endif

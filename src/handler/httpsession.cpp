@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Fanout, Inc.
+ * Copyright (C) 2016-2017 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -27,6 +27,7 @@
 #include <QJsonArray>
 #include "log.h"
 #include "bufferlist.h"
+#include "packet/retryrequestpacket.h"
 #include "zhttpmanager.h"
 #include "zhttprequest.h"
 #include "cors.h"
@@ -38,6 +39,7 @@
 #include "ratelimiter.h"
 #include "publishlastids.h"
 #include "httpsessionupdatemanager.h"
+#include "filters.h"
 
 #define RETRY_TIMEOUT 1000
 #define RETRY_MAX 5
@@ -108,8 +110,10 @@ public:
 	QUrl currentUri;
 	QUrl nextUri;
 	bool needUpdate;
+	Priority needUpdatePriority;
 	UpdateAction *pendingAction;
 	QList<PublishItem> publishQueue;
+	RetryRequestPacket retryPacket;
 
 	Private(HttpSession *_q, ZhttpRequest *_req, const HttpSession::AcceptData &_adata, const Instruct &_instruct, ZhttpManager *_outZhttp, StatsManager *_stats, RateLimiter *_updateLimiter, PublishLastIds *_publishLastIds, HttpSessionUpdateManager *_updateManager) :
 		QObject(_q),
@@ -200,7 +204,19 @@ public:
 		{
 			// if we are already in the process of updating, flag to update
 			//   again after current one finishes
-			needUpdate = true;
+
+			if(needUpdate)
+			{
+				// if needUpdate was already flagged, then raise
+				//   priority if needed
+				if(priority == HighPriority)
+					needUpdatePriority = priority;
+			}
+			else
+			{
+				needUpdate = true;
+				needUpdatePriority = priority;
+			}
 			return;
 		}
 
@@ -224,14 +240,13 @@ public:
 
 		needUpdate = false;
 
-		if(nextUri.isEmpty())
+		if(instruct.holdMode != Instruct::ResponseHold && nextUri.isEmpty())
 		{
 			// can't update without valid link
 			return;
 		}
 
-		// turn off timers during update
-		timer->stop();
+		// turn off update timer during update
 		updateManager->unregisterSession(q);
 
 		if(priority == HighPriority)
@@ -267,10 +282,45 @@ public:
 
 			assert(instruct.holdMode == Instruct::ResponseHold);
 
-			if(f.haveBodyPatch)
-				respond(f.code, f.reason, f.headers, f.bodyPatch, exposeHeaders);
-			else
-				respond(f.code, f.reason, f.headers, f.body, exposeHeaders);
+			if(!channels.contains(item.channel))
+			{
+				log_debug("httpsession: received publish for channel with no subscription, dropping");
+				return;
+			}
+
+			Instruct::Channel &channel = channels[item.channel];
+
+			if(!channel.prevId.isNull())
+			{
+				if(channel.prevId != item.prevId)
+				{
+					log_debug("lastid inconsistency (got=%s, expected=%s), retrying", qPrintable(item.prevId), qPrintable(channel.prevId));
+					publishLastIds->remove(item.channel);
+
+					update(LowPriority);
+					return;
+				}
+
+				channel.prevId = item.id;
+			}
+
+			if(!Filters::applyFilters(instruct.meta, item.meta, channels[item.channel].filters))
+				return;
+
+			// NOTE: http-response mode doesn't support a close
+			//   action since it's better to send a real response
+
+			if(f.action == PublishFormat::Send)
+			{
+				if(f.haveBodyPatch)
+					respond(f.code, f.reason, f.headers, f.bodyPatch, exposeHeaders);
+				else
+					respond(f.code, f.reason, f.headers, f.body, exposeHeaders);
+			}
+			else if(f.action == PublishFormat::Hint)
+			{
+				update(HighPriority);
+			}
 		}
 		else if(f.type == PublishFormat::HttpStream)
 		{
@@ -344,23 +394,31 @@ private:
 		}
 		else // ResponseHold, StreamHold
 		{
-			prepareToSendQueueOrHold();
+			prepareToSendQueueOrHold(true);
 		}
 	}
 
 	void doUpdate()
 	{
-		state = Proxying;
 		pendingAction = 0;
 
-		requestNextLink();
+		if(instruct.holdMode == Instruct::ResponseHold)
+		{
+			connect(req, &ZhttpRequest::paused, this, &Private::req_paused);
+			req->pause();
+		}
+		else
+		{
+			state = Proxying;
+			requestNextLink();
+		}
 	}
 
-	void prepareToSendQueueOrHold()
+	void prepareToSendQueueOrHold(bool first = false)
 	{
 		assert(instruct.holdMode != Instruct::NoHold);
 
-		if(instruct.holdMode == Instruct::StreamHold)
+		if(first && instruct.holdMode == Instruct::StreamHold)
 		{
 			bool conflict = false;
 			foreach(const Instruct::Channel &c, instruct.channels)
@@ -502,37 +560,37 @@ private:
 		{
 			PublishItem item = publishQueue.takeFirst();
 
+			if(!channels.contains(item.channel))
+			{
+				log_debug("httpsession: received publish for channel with no subscription, dropping");
+				continue;
+			}
+
+			Instruct::Channel &channel = channels[item.channel];
+
+			if(!channel.prevId.isNull())
+			{
+				if(channel.prevId != item.prevId)
+				{
+					log_debug("lastid inconsistency (got=%s, expected=%s), retrying", qPrintable(item.prevId), qPrintable(channel.prevId));
+					publishLastIds->remove(item.channel);
+
+					publishQueue.clear();
+
+					update(LowPriority);
+					break;
+				}
+
+				channel.prevId = item.id;
+			}
+
+			if(!Filters::applyFilters(instruct.meta, item.meta, channels[item.channel].filters))
+				continue;
+
 			PublishFormat &f = item.format;
 
-			if(f.close)
+			if(f.action == PublishFormat::Send)
 			{
-				prepareToClose();
-				req->endBody();
-				break;
-			}
-			else
-			{
-				if(!channels.contains(item.channel))
-				{
-					log_debug("httpsession: received publish for channel with no subscription, dropping");
-					continue;
-				}
-
-				Instruct::Channel &channel = channels[item.channel];
-
-				if(!channel.prevId.isNull())
-				{
-					if(channel.prevId != item.prevId)
-					{
-						publishQueue.clear();
-
-						update(LowPriority);
-						break;
-					}
-
-					channel.prevId = item.id;
-				}
-
 				req->writeBody(f.body);
 
 				// restart keep alive timer
@@ -541,6 +599,20 @@ private:
 
 				if(!nextUri.isEmpty() && instruct.nextLinkTimeout >= 0)
 					updateManager->registerSession(q, instruct.nextLinkTimeout, nextUri);
+			}
+			else if(f.action == PublishFormat::Hint)
+			{
+				// clear queue since any items will be redundant
+				publishQueue.clear();
+
+				update(HighPriority);
+				break;
+			}
+			else if(f.action == PublishFormat::Close)
+			{
+				prepareToClose();
+				req->endBody();
+				break;
 			}
 		}
 
@@ -564,15 +636,15 @@ private:
 	{
 		state = Holding;
 
-		// start keep alive timer
-		if(instruct.keepAliveTimeout >= 0)
+		// start keep alive timer, if it wasn't started already
+		if(!timer->isActive() && instruct.keepAliveTimeout >= 0)
 			timer->start(instruct.keepAliveTimeout * 1000);
 
 		if(!nextUri.isEmpty() && instruct.nextLinkTimeout >= 0)
 			updateManager->registerSession(q, instruct.nextLinkTimeout, nextUri);
 
 		if(needUpdate)
-			update(LowPriority);
+			update(needUpdatePriority);
 	}
 
 	void respond(int _code, const QByteArray &_reason, const HttpHeaders &_headers, const QByteArray &_body)
@@ -744,11 +816,13 @@ private:
 		respond(code, reason, headers, body, exposeHeaders);
 	}
 
-	void doFinish()
+	void doFinish(bool retry = false)
 	{
 		ZhttpRequest::Rid rid = req->rid();
 
-		log_debug("httpsession: cleaning up ('%s', '%s')", rid.first.data(), rid.second.data());
+		QByteArray cid = rid.first + ':' + rid.second;
+
+		log_debug("httpsession: cleaning up %s", cid.data());
 
 		cleanup();
 
@@ -765,7 +839,49 @@ private:
 			assert(self); // deleting here would leak subscriptions/connections
 		}
 
-		stats->removeConnection(rid.first + ':' + rid.second, false);
+		if(retry)
+		{
+			// refresh before remove, to ensure transition
+			stats->refreshConnection(cid);
+			stats->removeConnection(cid, true);
+
+			ZhttpRequest::ServerState ss = req->serverState();
+
+			RetryRequestPacket rp;
+
+			RetryRequestPacket::Request rpreq;
+			rpreq.rid = rid;
+			rpreq.https = (req->requestUri().scheme() == "https");
+			rpreq.peerAddress = req->peerAddress();
+			rpreq.debug = adata.debug;
+			rpreq.autoCrossOrigin = adata.autoCrossOrigin;
+			rpreq.jsonpCallback = adata.jsonpCallback;
+			rpreq.jsonpExtendedResponse = adata.jsonpExtendedResponse;
+			rpreq.inSeq = ss.inSeq;
+			rpreq.outSeq = ss.outSeq;
+			rpreq.outCredits = ss.outCredits;
+			rpreq.userData = ss.userData;
+
+			rp.requests += rpreq;
+
+			rp.requestData = adata.requestData;
+
+			if(adata.haveInspectInfo)
+			{
+				rp.haveInspectInfo = true;
+				rp.inspectInfo.doProxy = adata.inspectInfo.doProxy;
+				rp.inspectInfo.sharingKey = adata.inspectInfo.sharingKey;
+				rp.inspectInfo.sid = adata.inspectInfo.sid;
+				rp.inspectInfo.lastIds = adata.inspectInfo.lastIds;
+				rp.inspectInfo.userData = adata.inspectInfo.userData;
+			}
+
+			retryPacket = rp;
+		}
+		else
+		{
+			stats->removeConnection(cid, false);
+		}
 
 		emit q->finished();
 	}
@@ -848,6 +964,10 @@ private:
 
 			if(outReq->bytesAvailable() > 0)
 			{
+				// stop keep alive timer only if we have to send data. if the
+				//   response body is empty, then the timer is left alone
+				timer->stop();
+
 				int avail = req->writeBytesAvailable();
 				if(avail <= 0)
 					return;
@@ -1006,6 +1126,11 @@ private slots:
 		doFinish();
 	}
 
+	void req_paused()
+	{
+		doFinish(true); // finish for retry
+	}
+
 	void outReq_readyRead()
 	{
 		haveOutReqHeaders = true;
@@ -1047,8 +1172,6 @@ private slots:
 
 	void timer_timeout()
 	{
-		assert(state == Holding);
-
 		if(instruct.holdMode == Instruct::ResponseHold)
 		{
 			// send timeout response
@@ -1064,10 +1187,7 @@ private slots:
 
 	void retryTimer_timeout()
 	{
-		if(state == Proxying)
-			requestNextLink();
-		else if(state == Holding)
-			update(LowPriority);
+		requestNextLink();
 	}
 };
 
@@ -1084,7 +1204,13 @@ HttpSession::~HttpSession()
 
 Instruct::HoldMode HttpSession::holdMode() const
 {
-	return d->instruct.holdMode;
+	if(d->instruct.holdMode == Instruct::NoHold)
+	{
+		// NoHold is a temporary internal state for stream
+		return Instruct::StreamHold;
+	}
+	else
+		return d->instruct.holdMode;
 }
 
 ZhttpRequest::Rid HttpSession::rid() const
@@ -1095,6 +1221,11 @@ ZhttpRequest::Rid HttpSession::rid() const
 QUrl HttpSession::requestUri() const
 {
 	return d->adata.requestData.uri;
+}
+
+bool HttpSession::isRetry() const
+{
+	return d->adata.isRetry;
 }
 
 QString HttpSession::route() const
@@ -1115,6 +1246,11 @@ QHash<QString, Instruct::Channel> HttpSession::channels() const
 QHash<QString, QString> HttpSession::meta() const
 {
 	return d->instruct.meta;
+}
+
+RetryRequestPacket HttpSession::retryPacket() const
+{
+	return d->retryPacket;
 }
 
 void HttpSession::start()

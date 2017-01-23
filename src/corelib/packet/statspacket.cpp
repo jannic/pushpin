@@ -50,6 +50,9 @@ QVariant StatsPacket::toVariant() const
 			x = 0;
 		obj["count"] = x;
 
+		if(blocks >= 0)
+			obj["blocks"] = blocks;
+
 		obj["transport"] = transport;
 	}
 	else if(type == Connected || type == Disconnected)
@@ -101,6 +104,10 @@ QVariant StatsPacket::toVariant() const
 			obj["sent"] = messagesSent;
 		if(httpResponseMessagesSent != -1)
 			obj["http-response-sent"] = httpResponseMessagesSent;
+		if(blocksReceived >= 0)
+			obj["blocks-received"] = blocksReceived;
+		if(blocksSent >= 0)
+			obj["blocks-sent"] = blocksSent;
 	}
 
 	return obj;
@@ -163,6 +170,14 @@ bool StatsPacket::fromVariant(const QByteArray &_type, const QVariant &in)
 		count = obj["count"].toInt();
 		if(count < 0)
 			return false;
+
+		if(obj.contains("blocks"))
+		{
+			if(!obj["blocks"].canConvert(QVariant::Int))
+				return false;
+
+			blocks = obj["blocks"].toInt();
+		}
 
 		if(!obj.contains("transport") || obj["transport"].type() != QVariant::ByteArray)
 			return false;
@@ -297,6 +312,22 @@ bool StatsPacket::fromVariant(const QByteArray &_type, const QVariant &in)
 				return false;
 
 			httpResponseMessagesSent = obj["http-response-sent"].toInt();
+		}
+
+		if(obj.contains("blocks-received"))
+		{
+			if(!obj["blocks-received"].canConvert(QVariant::Int))
+				return false;
+
+			blocksReceived = obj["blocks-received"].toInt();
+		}
+
+		if(obj.contains("blocks-sent"))
+		{
+			if(!obj["blocks-sent"].canConvert(QVariant::Int))
+				return false;
+
+			blocksSent = obj["blocks-sent"].toInt();
 		}
 	}
 	else

@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <QCoreApplication>
+#include <QFile>
 #include <QCommandLineParser>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -100,22 +101,31 @@ class ArgsData
 public:
 	typedef QPair<QByteArray, QByteArray> Header;
 
+	enum Action
+	{
+		Send,
+		Hint,
+		Close
+	};
+
 	QString id;
 	QString prevId;
 	QString sender;
+	Action action;
 	int code;
 	QList<Header> headers;
-	bool close;
 	bool patch;
 	QVariantList bodyPatch;
+	bool eol;
 	QString spec;
 	QString channel;
 	QString content;
 
 	ArgsData() :
+		action(Send),
 		code(-1),
-		close(false),
-		patch(false)
+		patch(false),
+		eol(true)
 	{
 	}
 };
@@ -133,10 +143,14 @@ static CommandLineParseResult parseCommandLine(QCommandLineParser *parser, ArgsD
 	parser->addOption(codeOption);
 	const QCommandLineOption headerOption(QStringList() << "H" << "header", "Add HTTP response header.", "\"K: V\"");
 	parser->addOption(headerOption);
+	const QCommandLineOption hintOption("hint", "Send hint instead of content.");
+	parser->addOption(hintOption);
 	const QCommandLineOption closeOption("close", "Close streaming and WebSocket connections.");
 	parser->addOption(closeOption);
 	const QCommandLineOption patchOption("patch", "Content is JSON patch.");
 	parser->addOption(patchOption);
+	const QCommandLineOption noEolOption("no-eol", "Don't add newline to HTTP payloads.");
+	parser->addOption(noEolOption);
 	const QCommandLineOption specOption("spec", "ZeroMQ PUSH spec (default: tcp://localhost:5560).", "spec", "tcp://localhost:5560");
 	parser->addOption(specOption);
 	parser->addPositionalArgument("channel", "Channel to send to.");
@@ -194,8 +208,10 @@ static CommandLineParseResult parseCommandLine(QCommandLineParser *parser, ArgsD
 		}
 	}
 
-	if(parser->isSet(closeOption))
-		args->close = true;
+	if(parser->isSet(hintOption))
+		args->action = ArgsData::Hint;
+	else if(parser->isSet(closeOption))
+		args->action = ArgsData::Close;
 
 	const QStringList positionalArguments = parser->positionalArguments();
 
@@ -213,6 +229,9 @@ static CommandLineParseResult parseCommandLine(QCommandLineParser *parser, ArgsD
 		args->bodyPatch = convertFromJsonStyle(doc.array().toVariantList()).toList();
 	}
 
+	if(parser->isSet(noEolOption))
+		args->eol = false;
+
 	args->spec = parser->value(specOption);
 
 	if(positionalArguments.isEmpty())
@@ -226,7 +245,7 @@ static CommandLineParseResult parseCommandLine(QCommandLineParser *parser, ArgsD
 	if(positionalArguments.count() >= 2)
 		args->content = positionalArguments[1];
 
-	if(!args->close && positionalArguments.count() < 2)
+	if(args->action == ArgsData::Send && positionalArguments.count() < 2)
 	{
 		*errorMessage = "error: must specify content";
 		return CommandLineError;
@@ -265,14 +284,37 @@ int main(int argc, char **argv)
 
 	QVariantHash formats;
 
-	if(!args.close)
+	bool isFile = false;
+	if(args.content.startsWith('@'))
+	{
+		QString fname = args.content.mid(1);
+		QFile f(fname);
+		if(!f.open(QFile::ReadOnly))
+		{
+			errorMessage = QString("error: can't read file: %1").arg(fname);
+			fprintf(stderr, "%s\n\n%s", qPrintable(errorMessage), qPrintable(parser.helpText()));
+			return 1;
+		}
+
+		isFile = true;
+		args.content = f.readAll();
+	}
+
+	if(args.action == ArgsData::Send)
 	{
 		QVariantHash httpResponse;
 
 		if(args.patch)
+		{
 			httpResponse["body-patch"] = args.bodyPatch;
+		}
 		else
-			httpResponse["body"] = args.content.toUtf8() + "\n";
+		{
+			QByteArray body = args.content.toUtf8();
+			if(args.eol && !isFile)
+				body += '\n';
+			httpResponse["body"] = body;
+		}
 
 		if(args.code != -1)
 			httpResponse["code"] = args.code;
@@ -287,24 +329,39 @@ int main(int argc, char **argv)
 		}
 
 		formats["http-response"] = httpResponse;
-	}
 
-	if(!args.patch)
+		if(!args.patch)
+		{
+			QVariantHash httpStream;
+			QByteArray body = args.content.toUtf8();
+			if(args.eol && !isFile)
+				body += '\n';
+			httpStream["content"] = body;
+			formats["http-stream"] = httpStream;
+
+			QVariantHash wsMessage;
+			wsMessage["content"] = args.content.toUtf8();
+			formats["ws-message"] = wsMessage;
+		}
+	}
+	else if(args.action == ArgsData::Hint)
+	{
+		QVariantHash httpResponse;
+		httpResponse["action"] = QByteArray("hint");
+		formats["http-response"] = httpResponse;
+
+		QVariantHash httpStream;
+		httpStream["action"] = QByteArray("hint");
+		formats["http-stream"] = httpStream;
+	}
+	else if(args.action == ArgsData::Close)
 	{
 		QVariantHash httpStream;
-		if(args.close)
-			httpStream["action"] = QByteArray("close");
-		else
-			httpStream["content"] = args.content.toUtf8() + "\n";
-
+		httpStream["action"] = QByteArray("close");
 		formats["http-stream"] = httpStream;
 
 		QVariantHash wsMessage;
-		if(args.close)
-			wsMessage["action"] = QByteArray("close");
-		else
-			wsMessage["content"] = args.content.toUtf8();
-
+		wsMessage["action"] = QByteArray("close");
 		formats["ws-message"] = wsMessage;
 	}
 
