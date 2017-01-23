@@ -1,3 +1,9 @@
+pushpin (1.15.0-1) unstable; urgency=medium
+
+  * New upstream version
+
+ -- Jan Niehusmann <jan@debian.org>  Mon, 23 Jan 2017 15:38:23 +0100
+
 pushpin (1.14.0-2) unstable; urgency=medium
 
   * Fix build on GNU Hurd.
