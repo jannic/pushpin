@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014-2016 Fanout, Inc.
+ * Copyright (C) 2014-2017 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -40,12 +40,16 @@ public:
 	void sendGripMessage(const QByteArray &message);
 	void sendNeedKeepAlive();
 
+	// tell session that a received sendEvent has been written
+	void sendEventWritten();
+
 signals:
-	void sendEventReceived(WebSocket::Frame::Type type, const QByteArray &message);
+	void sendEventReceived(WebSocket::Frame::Type type, const QByteArray &message, bool queue);
 	void keepAliveSetupEventReceived(bool enable, int timeout = -1);
 	void closeEventReceived(int code); // -1 for no code
 	void detachEventReceived();
 	void cancelEventReceived();
+	void error();
 
 private:
 	class Private;

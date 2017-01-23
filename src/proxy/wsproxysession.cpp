@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014 Fanout, Inc.
+ * Copyright (C) 2014-2017 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -42,6 +42,7 @@
 #include "testwebsocket.h"
 
 #define ACTIVITY_TIMEOUT 60000
+#define FRAME_SIZE_MAX 16384
 
 class HttpExtension
 {
@@ -223,6 +224,8 @@ public:
 		Closing
 	};
 
+	typedef QPair<WebSocket::Frame, bool> QueuedFrame;
+
 	WsProxySession *q;
 	State state;
 	ZRoutes *zroutes;
@@ -244,6 +247,7 @@ public:
 	WebSocket *inSock;
 	WebSocket *outSock;
 	int inPendingBytes;
+	QList<bool> inPendingFrames; // true means we should ack a send event
 	int outPendingBytes;
 	int outReadInProgress; // frame type or -1
 	QByteArray pathBeg;
@@ -258,6 +262,7 @@ public:
 	QDateTime activityTime;
 	QByteArray publicCid;
 	QTimer *keepAliveTimer;
+	QList<QueuedFrame> queuedInFrames; // frames to deliver after out read finishes
 
 	Private(WsProxySession *_q, ZRoutes *_zroutes, ConnectionManager *_connectionManager, StatsManager *_statsManager, WsControlManager *_wsControlManager) :
 		QObject(_q),
@@ -412,6 +417,14 @@ public:
 		tryNextTarget();
 	}
 
+	void writeInFrame(const WebSocket::Frame &frame, bool fromSendEvent = false)
+	{
+		inPendingBytes += frame.data.size();
+		inPendingFrames += fromSendEvent;
+
+		inSock->writeFrame(frame);
+	}
+
 	void tryNextTarget()
 	{
 		if(targets.isEmpty())
@@ -555,7 +568,7 @@ public:
 
 			tryLogActivity();
 
-			if(detached)
+			if(detached && outReadInProgress == -1)
 				continue;
 
 			if(f.type == WebSocket::Frame::Text || f.type == WebSocket::Frame::Binary || f.type == WebSocket::Frame::Continuation)
@@ -582,8 +595,7 @@ public:
 						if(f.data.startsWith(messagePrefix))
 						{
 							f.data = f.data.mid(messagePrefix.size());
-							inSock->writeFrame(f);
-							inPendingBytes += f.data.size();
+							writeInFrame(f);
 
 							restartKeepAlive();
 						}
@@ -596,16 +608,14 @@ public:
 					{
 						assert(outReadInProgress != -1);
 
-						inSock->writeFrame(f);
-						inPendingBytes += f.data.size();
+						writeInFrame(f);
 
 						restartKeepAlive();
 					}
 				}
 				else
 				{
-					inSock->writeFrame(f);
-					inPendingBytes += f.data.size();
+					writeInFrame(f);
 
 					restartKeepAlive();
 				}
@@ -616,10 +626,15 @@ public:
 			else
 			{
 				// always relay non-content frames
-				inSock->writeFrame(f);
-				inPendingBytes += f.data.size();
+				writeInFrame(f);
 
 				restartKeepAlive();
+			}
+
+			if(outReadInProgress == -1 && !queuedInFrames.isEmpty())
+			{
+				foreach(const QueuedFrame &i, queuedInFrames)
+					writeInFrame(i.first, i.second);
 			}
 		}
 	}
@@ -700,6 +715,13 @@ private slots:
 		Q_UNUSED(count);
 
 		inPendingBytes -= contentBytes;
+
+		for(int n = 0; n < count; ++n)
+		{
+			bool fromSendEvent = inPendingFrames.takeFirst();
+			if(fromSendEvent)
+				wsControl->sendEventWritten();
+		}
 
 		if(!detached && outSock)
 			tryReadOut();
@@ -795,6 +817,7 @@ private slots:
 				connect(wsControl, &WsControlSession::closeEventReceived, this, &Private::wsControl_closeEventReceived);
 				connect(wsControl, &WsControlSession::detachEventReceived, this, &Private::wsControl_detachEventReceived);
 				connect(wsControl, &WsControlSession::cancelEventReceived, this, &Private::wsControl_cancelEventReceived);
+				connect(wsControl, &WsControlSession::error, this, &Private::wsControl_error);
 				wsControl->start(routeId, channelPrefix, inSock->requestUri());
 
 				if(!subChannel.isEmpty())
@@ -902,18 +925,65 @@ private slots:
 		}
 	}
 
-	void wsControl_sendEventReceived(WebSocket::Frame::Type type, const QByteArray &message)
+	void wsControl_sendEventReceived(WebSocket::Frame::Type type, const QByteArray &message, bool queue)
 	{
 		// this method accepts a full message, which must be typed
 		if(type == WebSocket::Frame::Continuation)
 			return;
 
-		// only send if we can, otherwise drop
-		if(inSock && inSock->canWrite())
+		// if we have no socket to write to, say the data was written anyway.
+		//   this is not quite correct but better than leaving the send event
+		//   dangling
+		if(!inSock)
 		{
-			inSock->writeFrame(WebSocket::Frame(type, message, false));
+			wsControl->sendEventWritten();
+			return;
+		}
 
-			inPendingBytes += message.size();
+		// if queue == false, drop if we can't send right now
+		if(!queue && (!inSock->canWrite() || outReadInProgress != -1))
+		{
+			// if drop is allowed, drop is success :)
+			wsControl->sendEventWritten();
+			return;
+		}
+
+		// split into frames to avoid credits issue
+		QList<WebSocket::Frame> frames;
+
+		if(message.size() > 0)
+		{
+			for(int n = 0; n < message.size(); n += FRAME_SIZE_MAX)
+			{
+				WebSocket::Frame::Type ftype;
+				if(n == 0)
+					ftype = type;
+				else
+					ftype = WebSocket::Frame::Continuation;
+
+				QByteArray data = message.mid(n, FRAME_SIZE_MAX);
+				bool more = (n + FRAME_SIZE_MAX < message.size());
+
+				frames += WebSocket::Frame(ftype, data, more);
+			}
+		}
+		else
+		{
+			frames += WebSocket::Frame(type, QByteArray(), false);
+		}
+
+		for(int n = 0; n < frames.count(); ++n)
+		{
+			bool fromSendEvent = (n + 1 >= frames.count());
+
+			if(outReadInProgress != -1)
+			{
+				queuedInFrames += QueuedFrame(frames[n], fromSendEvent);
+			}
+			else
+			{
+				writeInFrame(frames[n], fromSendEvent);
+			}
 		}
 
 		restartKeepAlive();
@@ -973,6 +1043,12 @@ private slots:
 		tryFinish();
 	}
 
+	void wsControl_error()
+	{
+		log_debug("wsproxysession: %p wscontrol session error", q);
+		wsControl_cancelEventReceived();
+	}
+
 	void keepAliveTimer_timeout()
 	{
 		wsControl->sendNeedKeepAlive();
@@ -998,6 +1074,16 @@ QByteArray WsProxySession::routeId() const
 QByteArray WsProxySession::cid() const
 {
 	return d->publicCid;
+}
+
+WebSocket *WsProxySession::inSocket() const
+{
+	return d->inSock;
+}
+
+WebSocket *WsProxySession::outSocket() const
+{
+	return d->outSock;
 }
 
 void WsProxySession::setDefaultSigKey(const QByteArray &iss, const QByteArray &key)

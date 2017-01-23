@@ -298,6 +298,7 @@ public:
 		int packetsPending; // count of packets sent to m2 not yet ack'd
 		Session *session;
 		bool isNew;
+		bool continuation;
 		LayerTracker bodyTracker;
 		LayerTracker packetTracker;
 		QList<M2PendingOutItem> pendingOutItems; // packets yet to send
@@ -314,6 +315,7 @@ public:
 			packetsPending(0),
 			session(0),
 			isNew(false),
+			continuation(false),
 			flowControl(false),
 			waitForAllWritten(false),
 			outCreditsEnabled(false),
@@ -917,7 +919,8 @@ public:
 	{
 		QByteArray buf = packet.toByteArray();
 
-		log_debug("m2: OUT [%s]", buf.data());
+		if(log_outputLevel() >= LOG_LEVEL_DEBUG)
+			log_debug("m2: OUT [%s]", buf.mid(0, 1000).data());
 
 		m2_out_sock->write(QList<QByteArray>() << buf);
 	}
@@ -1447,7 +1450,8 @@ public:
 			return;
 		}
 
-		log_debug("%s: IN %s", logprefix, dataRaw.data());
+		if(log_outputLevel() >= LOG_LEVEL_DEBUG)
+			log_debug("%s: IN %s", logprefix, dataRaw.mid(0, 1000).data());
 
 		ZhttpResponsePacket zresp;
 		if(!zresp.fromVariant(data))
@@ -1847,10 +1851,19 @@ public:
 				else
 				{
 					int opcode;
-					if(zresp.contentType == "binary")
-						opcode = 2;
-					else // text
-						opcode = 1;
+					if(s->conn->continuation)
+					{
+						opcode = 0;
+					}
+					else
+					{
+						if(zresp.contentType == "binary")
+							opcode = 2;
+						else // text
+							opcode = 1;
+					}
+
+					s->conn->continuation = zresp.more;
 
 					QByteArray frame = makeWsHeader(!zresp.more, opcode, zresp.body.size()) + zresp.body;
 

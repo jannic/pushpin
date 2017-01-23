@@ -47,7 +47,7 @@ public:
 	Type type;
 	QByteArray from;
 	QByteArray route;
-	int count; // activity
+	int count; // activity, message
 	QByteArray connectionId; // connected, disconnected
 	ConnectionType connectionType; // connected
 	QHostAddress peerAddress; // connected
@@ -57,11 +57,14 @@ public:
 	QByteArray channel; // message, subscribed, unsubscribed
 	QByteArray itemId; // message
 	QByteArray transport; // message
+	int blocks; // message
 	int connectionsMax; // report
 	int connectionsMinutes; // report
 	int messagesReceived; // report
 	int messagesSent; // report
 	int httpResponseMessagesSent; // report
+	int blocksReceived; // report
+	int blocksSent; // report
 
 	StatsPacket() :
 		type((Type)-1),
@@ -69,11 +72,14 @@ public:
 		connectionType((ConnectionType)-1),
 		ssl(false),
 		ttl(-1),
+		blocks(-1),
 		connectionsMax(-1),
 		connectionsMinutes(-1),
 		messagesReceived(-1),
 		messagesSent(-1),
-		httpResponseMessagesSent(-1)
+		httpResponseMessagesSent(-1),
+		blocksReceived(-1),
+		blocksSent(-1)
 	{
 	}
 

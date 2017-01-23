@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Fanout, Inc.
+ * Copyright (C) 2015-2017 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -60,9 +60,11 @@
 #include "httpsession.h"
 #include "controlrequest.h"
 #include "conncheckworker.h"
+#include "refreshworker.h"
 #include "ratelimiter.h"
 #include "httpsessionupdatemanager.h"
 #include "sequencer.h"
+#include "filters.h"
 
 #define DEFAULT_HWM 101000
 #define SUB_SNDHWM 0 // infinite
@@ -71,30 +73,14 @@
 #define STATE_RPC_TIMEOUT 1000
 #define PROXY_RPC_TIMEOUT 10000
 #define DEFAULT_WS_KEEPALIVE_TIMEOUT 55
+#define DEFAULT_WS_SENDDELAYED_TIMEOUT 1
+#define WSCONTROL_REQUEST_TIMEOUT 8000
 #define SUBSCRIBED_DELAY 1000
 
 #define INSPECT_WORKERS_MAX 10
 #define ACCEPT_WORKERS_MAX 10
 
 using namespace VariantUtil;
-
-// return true to send and false to drop.
-// TODO: support more than one filter, payload modification, etc
-static bool applyFilters(const QHash<QString, QString> &subscriptionMeta, const QHash<QString, QString> &publishMeta, const QStringList &filters)
-{
-	foreach(const QString &f, filters)
-	{
-		if(f == "skip-self")
-		{
-			QString user = subscriptionMeta.value("user");
-			QString sender = publishMeta.value("sender");
-			if(!user.isEmpty() && !sender.isEmpty() && sender == user)
-				return false;
-		}
-	}
-
-	return true;
-}
 
 static QList<PublishItem> parseHttpItems(const QVariantList &vitems, bool *ok = 0, QString *errorMessage = 0)
 {
@@ -398,6 +384,7 @@ class WsSession : public QObject
 
 public:
 	QString cid;
+	int nextReqId;
 	QString channelPrefix;
 	HttpRequestData requestData;
 	QString route;
@@ -408,36 +395,137 @@ public:
 	int ttl;
 	QByteArray keepAliveType;
 	QByteArray keepAliveMessage;
-	QTimer *timer;
+	QByteArray delayedType;
+	QByteArray delayedMessage;
+	QHash<int, qint64> pendingRequests;
+	QTimer *expireTimer;
+	QTimer *delayedTimer;
+	QTimer *requestTimer;
 
 	WsSession(QObject *parent = 0) :
-		QObject(parent)
+		QObject(parent),
+		nextReqId(0)
 	{
-		timer = new QTimer(this);
-		connect(timer, &QTimer::timeout, this, &WsSession::timer_timeout);
+		expireTimer = new QTimer(this);
+		expireTimer->setSingleShot(true);
+		connect(expireTimer, &QTimer::timeout, this, &WsSession::expireTimer_timeout);
+
+		delayedTimer = new QTimer(this);
+		delayedTimer->setSingleShot(true);
+		connect(delayedTimer, &QTimer::timeout, this, &WsSession::delayedTimer_timeout);
+
+		requestTimer = new QTimer(this);
+		requestTimer->setSingleShot(true);
+		connect(requestTimer, &QTimer::timeout, this, &WsSession::requestTimer_timeout);
 	}
 
 	~WsSession()
 	{
-		timer->disconnect(this);
-		timer->setParent(0);
-		timer->deleteLater();
+		expireTimer->disconnect(this);
+		expireTimer->setParent(0);
+		expireTimer->deleteLater();
+
+		delayedTimer->disconnect(this);
+		delayedTimer->setParent(0);
+		delayedTimer->deleteLater();
+
+		requestTimer->disconnect(this);
+		requestTimer->setParent(0);
+		requestTimer->deleteLater();
 	}
 
 	void refreshExpiration()
 	{
-		timer->start(ttl * 1000);
+		expireTimer->start(ttl * 1000);
+	}
+
+	void flushDelayed()
+	{
+		if(delayedTimer->isActive())
+		{
+			delayedTimer->stop();
+			delayedTimer_timeout();
+		}
+	}
+
+	void sendDelayed(const QByteArray &type, const QByteArray &message, int timeout)
+	{
+		flushDelayed();
+
+		delayedType = type;
+		delayedMessage = message;
+		delayedTimer->start(timeout * 1000);
+	}
+
+	void ack(int reqId)
+	{
+		if(pendingRequests.contains(reqId))
+		{
+			pendingRequests.remove(reqId);
+			setupRequestTimer();
+		}
 	}
 
 signals:
+	void send(int reqId, const QByteArray &type, const QByteArray &message);
 	void expired();
+	void error();
+
+private:
+	void setupRequestTimer()
+	{
+		if(!pendingRequests.isEmpty())
+		{
+			// find next expiring request
+			qint64 lowestTime = -1;
+			QHashIterator<int, qint64> it(pendingRequests);
+			while(it.hasNext())
+			{
+				it.next();
+				qint64 time = it.value();
+
+				if(lowestTime == -1 || time < lowestTime)
+					lowestTime = time;
+			}
+
+			int until = int(lowestTime - QDateTime::currentMSecsSinceEpoch());
+
+			requestTimer->start(qMax(until, 0));
+		}
+		else
+		{
+			requestTimer->stop();
+		}
+	}
 
 private slots:
-	void timer_timeout()
+	void expireTimer_timeout()
 	{
 		log_debug("timing out ws session: %s", qPrintable(cid));
 
 		emit expired();
+	}
+
+	void delayedTimer_timeout()
+	{
+		int reqId = nextReqId++;
+
+		QByteArray message = delayedMessage;
+		delayedMessage.clear();
+
+		pendingRequests[reqId] = QDateTime::currentMSecsSinceEpoch() + WSCONTROL_REQUEST_TIMEOUT;
+		setupRequestTimer();
+
+		emit send(reqId, delayedType, message);
+	}
+
+	void requestTimer_timeout()
+	{
+		// on error, destroy any other pending requests
+		pendingRequests.clear();
+		setupRequestTimer();
+
+		emit error();
 	}
 };
 
@@ -451,13 +539,11 @@ public:
 	QHash<QString, QSet<HttpSession*> > responseSessionsByChannel;
 	QHash<QString, QSet<HttpSession*> > streamSessionsByChannel;
 	QHash<QString, QSet<WsSession*> > wsSessionsByChannel;
-	PublishLastIds responseLastIds;
-	PublishLastIds streamLastIds;
+	PublishLastIds publishLastIds;
 	QHash<QString, Subscription*> subs;
 
 	CommonState() :
-		responseLastIds(1000000),
-		streamLastIds(1000000)
+		publishLastIds(1000000)
 	{
 	}
 
@@ -973,11 +1059,11 @@ private:
 				{
 					QString name = channelPrefix + c.name;
 
-					QString lastId = cs->responseLastIds.value(name);
+					QString lastId = cs->publishLastIds.value(name);
 					if(!lastId.isNull() && lastId != c.prevId)
 					{
 						log_debug("lastid inconsistency (got=%s, expected=%s), retrying", qPrintable(c.prevId), qPrintable(lastId));
-						cs->responseLastIds.remove(name);
+						cs->publishLastIds.remove(name);
 						conflict = true;
 
 						// NOTE: don't exit loop here. we want to clear
@@ -1058,6 +1144,7 @@ private:
 			adata.requestData = requestData;
 			adata.peerAddress = rs.peerAddress;
 			adata.debug = rs.debug;
+			adata.isRetry = rs.isRetry;
 			adata.autoCrossOrigin = rs.autoCrossOrigin;
 			adata.jsonpCallback = rs.jsonpCallback;
 			adata.jsonpExtendedResponse = rs.jsonpExtendedResponse;
@@ -1068,10 +1155,10 @@ private:
 			adata.sigIss = sigIss;
 			adata.sigKey = sigKey;
 			adata.trusted = trusted;
+			adata.haveInspectInfo = haveInspectInfo;
+			adata.inspectInfo = inspectInfo;
 
-			PublishLastIds &publishLastIds = (instruct.holdMode == Instruct::ResponseHold ? cs->responseLastIds : cs->streamLastIds);
-
-			sessions += new HttpSession(httpReq, adata, instruct, zhttpOut, stats, updateLimiter, &publishLastIds, httpSessionUpdateManager, this);
+			sessions += new HttpSession(httpReq, adata, instruct, zhttpOut, stats, updateLimiter, &cs->publishLastIds, httpSessionUpdateManager, this);
 		}
 
 		// engine should directly connect to this and register the holds
@@ -1243,7 +1330,7 @@ public:
 
 		httpSessionUpdateManager = new HttpSessionUpdateManager(this);
 
-		sequencer = new Sequencer(this);
+		sequencer = new Sequencer(&cs.publishLastIds, this);
 		connect(sequencer, &Sequencer::itemReady, this, &Private::sequencer_itemReady);
 	}
 
@@ -1513,6 +1600,16 @@ public:
 private:
 	void handlePublishItem(const PublishItem &item)
 	{
+		if(!cs.subs.contains(item.channel))
+		{
+			// don't sequence if nobody's listening, because we
+			//   clear lastId on unsubscribe and don't want it to
+			//   be set again until after a subscription returns
+
+			log_info("publish channel=%s receivers=0", qPrintable(item.channel));
+			return;
+		}
+
 		sequencer->addItem(item);
 	}
 
@@ -1530,7 +1627,7 @@ private:
 		retrySock->write(QList<QByteArray>() << TnetString::fromVariant(vout));
 	}
 
-	void writeWsControlItem(const WsControlPacket::Item &item)
+	void writeWsControlItems(const QList<WsControlPacket::Item> &items)
 	{
 		if(!wsControlOutSock)
 		{
@@ -1539,7 +1636,7 @@ private:
 		}
 
 		WsControlPacket out;
-		out.items += item;
+		out.items = items;
 
 		QVariant vout = out.toVariant();
 
@@ -1572,12 +1669,28 @@ private:
 			cs.subs.remove(channel);
 			delete sub;
 
+			sequencer->clearPendingForChannel(channel);
+			cs.publishLastIds.remove(channel);
+
 			if(inSubSock)
 			{
 				log_debug("SUB socket unsubscribe: %s", qPrintable(channel));
 				inSubSock->unsubscribe(channel.toUtf8());
 			}
 		}
+	}
+
+	void removeWsSession(WsSession *s)
+	{
+		QSet<QString> unsubs = cs.removeWsSessionChannels(s);
+
+		foreach(const QString &channel, unsubs)
+			stats->removeSubscription("ws", channel, false);
+
+		log_debug("removed ws session: %s", qPrintable(s->cid));
+
+		cs.wsSessions.remove(s->cid);
+		delete s;
 	}
 
 	void httpControlRespond(SimpleHttpRequest *req, int code, const QByteArray &reason, const QString &body, const QByteArray &contentType = QByteArray(), const HttpHeaders &headers = HttpHeaders(), int items = -1)
@@ -1612,15 +1725,17 @@ private:
 		{
 			WsSession *s = qobject_cast<WsSession*>(target);
 
+			if(!Filters::applyFilters(s->meta, item.meta, s->channelFilters[item.channel]))
+				return;
+
+			// TODO: hint support for websockets?
+			if(f.action != PublishFormat::Send && f.action != PublishFormat::Close)
+				return;
+
 			WsControlPacket::Item i;
 			i.cid = s->cid.toUtf8();
 
-			if(f.close)
-			{
-				i.type = WsControlPacket::Item::Close;
-				i.code = f.code;
-			}
-			else
+			if(f.action == PublishFormat::Send)
 			{
 				i.type = WsControlPacket::Item::Send;
 
@@ -1635,45 +1750,84 @@ private:
 
 				i.message = f.body;
 			}
+			else if(f.action == PublishFormat::Close)
+			{
+				i.type = WsControlPacket::Item::Close;
+				i.code = f.code;
+			}
 
-			writeWsControlItem(i);
+			writeWsControlItems(QList<WsControlPacket::Item>() << i);
 		}
+	}
+
+	int blocksForData(int size) const
+	{
+		if(config.messageBlockSize <= 0)
+			return -1;
+
+		return (size + config.messageBlockSize - 1) / config.messageBlockSize;
+	}
+
+	void updateSessions(const QString &channel = QString())
+	{
+		if(!channel.isNull())
+		{
+			QSet<HttpSession*> sessions = cs.responseSessionsByChannel.value(channel);
+			foreach(HttpSession *hs, sessions)
+				hs->update();
+
+			sessions = cs.streamSessionsByChannel.value(channel);
+			foreach(HttpSession *hs, sessions)
+				hs->update();
+		}
+		else
+		{
+			foreach(HttpSession *hs, cs.httpSessions)
+				hs->update();
+		}
+	}
+
+	void recoverCommand()
+	{
+		cs.publishLastIds.clear();
+		updateSessions();
 	}
 
 private slots:
 	void sequencer_itemReady(const PublishItem &item)
 	{
-		// always add for non-identified route
-		stats->addMessageReceived(QByteArray());
-
 		QList<HttpSession*> responseSessions;
 		QList<HttpSession*> streamSessions;
 		QList<WsSession*> wsSessions;
 		QSet<QString> sids;
 
+		int largestBlocks = -1;
+		if(item.size >= 0)
+			largestBlocks = blocksForData(item.size);
+
 		if(item.formats.contains(PublishFormat::HttpResponse))
 		{
+			if(item.size < 0)
+				largestBlocks = qMax(blocksForData(item.formats[PublishFormat::HttpResponse].body.size()), largestBlocks);
+
 			QSet<HttpSession*> sessions = cs.responseSessionsByChannel.value(item.channel);
 			foreach(HttpSession *hs, sessions)
 			{
 				assert(hs->holdMode() == Instruct::ResponseHold);
 				assert(hs->channels().contains(item.channel));
 
-				if(!applyFilters(hs->meta(), item.meta, hs->channels()[item.channel].filters))
-					continue;
-
 				responseSessions += hs;
 
 				if(!hs->sid().isEmpty())
 					sids += hs->sid();
 			}
-
-			if(!item.id.isNull())
-				cs.responseLastIds.set(item.channel, item.id);
 		}
 
 		if(item.formats.contains(PublishFormat::HttpStream))
 		{
+			if(item.size < 0)
+				largestBlocks = qMax(blocksForData(item.formats[PublishFormat::HttpStream].body.size()), largestBlocks);
+
 			QSet<HttpSession*> sessions = cs.streamSessionsByChannel.value(item.channel);
 			foreach(HttpSession *hs, sessions)
 			{
@@ -1686,28 +1840,22 @@ private slots:
 				if(!hs->channels().contains(item.channel))
 					continue;
 
-				if(!applyFilters(hs->meta(), item.meta, hs->channels()[item.channel].filters))
-					continue;
-
 				streamSessions += hs;
 
 				if(!hs->sid().isEmpty())
 					sids += hs->sid();
 			}
-
-			if(!item.id.isNull())
-				cs.streamLastIds.set(item.channel, item.id);
 		}
 
 		if(item.formats.contains(PublishFormat::WebSocketMessage))
 		{
+			if(item.size < 0)
+				largestBlocks = qMax(blocksForData(item.formats[PublishFormat::WebSocketMessage].body.size()), largestBlocks);
+
 			QSet<WsSession*> wsbc = cs.wsSessionsByChannel.value(item.channel);
 			foreach(WsSession *s, wsbc)
 			{
 				assert(s->channels.contains(item.channel));
-
-				if(!applyFilters(s->meta, item.meta, s->channelFilters[item.channel]))
-					continue;
 
 				wsSessions += s;
 
@@ -1715,6 +1863,9 @@ private slots:
 					sids += s->sid;
 			}
 		}
+
+		// always add for non-identified route
+		stats->addMessageReceived(QByteArray(), largestBlocks);
 
 		if(!responseSessions.isEmpty())
 		{
@@ -1739,11 +1890,20 @@ private slots:
 
 			log_debug("relaying to %d http-response subscribers", responseSessions.count());
 
+			// FIXME: if bodyPatch is used then body is empty. we should
+			//   really be calculating blocks after applying patch
+
+			int blocks;
+			if(item.size >= 0)
+				blocks = blocksForData(item.size);
+			else
+				blocks = blocksForData(f.body.size());
+
 			foreach(HttpSession *hs, responseSessions)
 			{
 				QString route = hs->route();
 
-				if(!publishLimiter->addAction(route, new PublishAction(this, hs, i, exposeHeaders)))
+				if(!publishLimiter->addAction(route, new PublishAction(this, hs, i, exposeHeaders), blocks != -1 ? blocks : 1))
 				{
 					if(!route.isEmpty())
 						log_warning("exceeded publish hwm (%d) for route %s, dropping message", config.messageHwm, qPrintable(route));
@@ -1751,10 +1911,10 @@ private slots:
 						log_warning("exceeded publish hwm (%d), dropping message", config.messageHwm);
 				}
 
-				stats->addMessageSent(route.toUtf8(), "http-response");
+				stats->addMessageSent(route.toUtf8(), "http-response", blocks);
 			}
 
-			stats->addMessage(i.channel, i.id, "http-response", responseSessions.count());
+			stats->addMessage(i.channel, i.id, "http-response", responseSessions.count(), blocks != -1 ? blocks * responseSessions.count() : -1);
 		}
 
 		if(!streamSessions.isEmpty())
@@ -1763,17 +1923,32 @@ private slots:
 			i.format = item.formats.value(PublishFormat::HttpStream);
 			i.formats.clear();
 
+			PublishFormat &f = i.format;
+
 			log_debug("relaying to %d http-stream subscribers", streamSessions.count());
+
+			int blocks;
+			if(item.size >= 0)
+				blocks = blocksForData(item.size);
+			else
+				blocks = blocksForData(f.body.size());
 
 			foreach(HttpSession *hs, streamSessions)
 			{
 				QString route = hs->route();
 
-				publishLimiter->addAction(route, new PublishAction(this, hs, i));
-				stats->addMessageSent(route.toUtf8(), "http-stream");
+				if(!publishLimiter->addAction(route, new PublishAction(this, hs, i), blocks != -1 ? blocks : 1))
+				{
+					if(!route.isEmpty())
+						log_warning("exceeded publish hwm (%d) for route %s, dropping message", config.messageHwm, qPrintable(route));
+					else
+						log_warning("exceeded publish hwm (%d), dropping message", config.messageHwm);
+				}
+
+				stats->addMessageSent(route.toUtf8(), "http-stream", blocks);
 			}
 
-			stats->addMessage(i.channel, i.id, "http-stream", streamSessions.count());
+			stats->addMessage(i.channel, i.id, "http-stream", streamSessions.count(), blocks != -1 ? blocks * streamSessions.count() : -1);
 		}
 
 		if(!wsSessions.isEmpty())
@@ -1782,17 +1957,32 @@ private slots:
 			i.format = item.formats.value(PublishFormat::WebSocketMessage);
 			i.formats.clear();
 
+			PublishFormat &f = i.format;
+
 			log_debug("relaying to %d ws-message subscribers", wsSessions.count());
+
+			int blocks;
+			if(item.size >= 0)
+				blocks = blocksForData(item.size);
+			else
+				blocks = blocksForData(f.body.size());
 
 			foreach(WsSession *s, wsSessions)
 			{
 				QString route = s->route;
 
-				publishLimiter->addAction(route, new PublishAction(this, s, i));
-				stats->addMessageSent(route.toUtf8(), "ws-message");
+				if(!publishLimiter->addAction(route, new PublishAction(this, s, i), blocks != -1 ? blocks : 1))
+				{
+					if(!route.isEmpty())
+						log_warning("exceeded publish hwm (%d) for route %s, dropping message", config.messageHwm, qPrintable(route));
+					else
+						log_warning("exceeded publish hwm (%d), dropping message", config.messageHwm);
+				}
+
+				stats->addMessageSent(route.toUtf8(), "ws-message", blocks);
 			}
 
-			stats->addMessage(i.channel, i.id, "ws-message", wsSessions.count());
+			stats->addMessage(i.channel, i.id, "ws-message", wsSessions.count(), blocks != -1 ? blocks * wsSessions.count() : -1);
 		}
 
 		int receivers = responseSessions.count() + streamSessions.count() + wsSessions.count();
@@ -1856,7 +2046,9 @@ private slots:
 
 		if(req->method() == "conncheck")
 		{
-			new ConnCheckWorker(req, proxyControlClient, stats, this);
+			ConnCheckWorker *w = new ConnCheckWorker(req, proxyControlClient, stats, this);
+			connect(w, &ConnCheckWorker::finished, this, &Private::deferred_finished);
+			deferreds += w;
 		}
 		else if(req->method() == "get-zmq-uris")
 		{
@@ -1869,6 +2061,18 @@ private slots:
 				out["publish-sub"] = config.pushInSubSpec.toUtf8();
 			req->respond(out);
 			delete req;
+		}
+		else if(req->method() == "recover")
+		{
+			recoverCommand();
+			req->respond();
+			delete req;
+		}
+		else if(req->method() == "refresh")
+		{
+			RefreshWorker *w = new RefreshWorker(req, proxyControlClient, this);
+			connect(w, &RefreshWorker::finished, this, &Private::deferred_finished);
+			deferreds += w;
 		}
 		else
 		{
@@ -1964,15 +2168,29 @@ private slots:
 
 		QStringList updateSids;
 
+		QList<WsControlPacket::Item> outItems;
+
 		foreach(const WsControlPacket::Item &item, packet.items)
 		{
+			if(item.type != WsControlPacket::Item::Ack && !item.requestId.isEmpty())
+			{
+				// ack receipt
+				WsControlPacket::Item i;
+				i.cid = item.cid;
+				i.type = WsControlPacket::Item::Ack;
+				i.requestId = item.requestId;
+				outItems += i;
+			}
+
 			if(item.type == WsControlPacket::Item::Here)
 			{
 				WsSession *s = cs.wsSessions.value(item.cid);
 				if(!s)
 				{
 					s = new WsSession(this);
+					connect(s, &WsSession::send, this, &Private::wssession_send);
 					connect(s, &WsSession::expired, this, &Private::wssession_expired);
+					connect(s, &WsSession::error, this, &Private::wssession_error);
 					s->cid = QString::fromUtf8(item.cid);
 					s->ttl = item.ttl;
 					s->requestData.uri = item.uri;
@@ -1995,7 +2213,7 @@ private slots:
 				WsControlPacket::Item i;
 				i.cid = item.cid;
 				i.type = WsControlPacket::Item::Cancel;
-				writeWsControlItem(i);
+				outItems += i;
 				continue;
 			}
 
@@ -2006,15 +2224,7 @@ private slots:
 			}
 			else if(item.type == WsControlPacket::Item::Gone || item.type == WsControlPacket::Item::Cancel)
 			{
-				QSet<QString> unsubs = cs.removeWsSessionChannels(s);
-
-				foreach(const QString &channel, unsubs)
-					stats->removeSubscription("ws", channel, false);
-
-				log_debug("removed ws session: %s", qPrintable(s->cid));
-
-				cs.wsSessions.remove(s->cid);
-				delete s;
+				removeWsSession(s);
 			}
 			else if(item.type == WsControlPacket::Item::Grip)
 			{
@@ -2079,12 +2289,19 @@ private slots:
 					WsControlPacket::Item i;
 					i.cid = item.cid;
 					i.type = WsControlPacket::Item::Detach;
-					writeWsControlItem(i);
+					outItems += i;
 				}
 				else if(cm.type == WsControlMessage::Session)
 				{
-					s->sid = cm.sessionId;
-					updateSids += cm.sessionId;
+					if(!cm.sessionId.isEmpty())
+					{
+						s->sid = cm.sessionId;
+						updateSids += cm.sessionId;
+					}
+					else
+					{
+						s->sid.clear();
+					}
 				}
 				else if(cm.type == WsControlMessage::SetMeta)
 				{
@@ -2101,7 +2318,7 @@ private slots:
 
 					if(!cm.content.isNull())
 					{
-						QString contentType;
+						QByteArray contentType;
 						switch(cm.messageType)
 						{
 							case WsControlMessage::Text:   contentType = "text"; break;
@@ -2111,7 +2328,7 @@ private slots:
 							default: continue; // unrecognized type, ignore
 						}
 
-						s->keepAliveType = contentType.toUtf8();
+						s->keepAliveType = contentType;
 						s->keepAliveMessage = cm.content;
 
 						i.timeout = (cm.timeout > 0 ? cm.timeout : DEFAULT_WS_KEEPALIVE_TIMEOUT);
@@ -2122,7 +2339,27 @@ private slots:
 						s->keepAliveMessage.clear();
 					}
 
-					writeWsControlItem(i);
+					outItems += i;
+				}
+				else if(cm.type == WsControlMessage::SendDelayed)
+				{
+					QByteArray contentType;
+					switch(cm.messageType)
+					{
+						case WsControlMessage::Text:   contentType = "text"; break;
+						case WsControlMessage::Binary: contentType = "binary"; break;
+						case WsControlMessage::Ping:   contentType = "ping"; break;
+						case WsControlMessage::Pong:   contentType = "pong"; break;
+						default: continue; // unrecognized type, ignore
+					}
+
+					int timeout = (cm.timeout > 0 ? cm.timeout : DEFAULT_WS_SENDDELAYED_TIMEOUT);
+
+					s->sendDelayed(contentType, cm.content, timeout);
+				}
+				else if(cm.type == WsControlMessage::FlushDelayed)
+				{
+					s->flushDelayed();
 				}
 			}
 			else if(item.type == WsControlPacket::Item::NeedKeepAlive)
@@ -2135,12 +2372,20 @@ private slots:
 					i.contentType = s->keepAliveType;
 					i.message = s->keepAliveMessage;
 
-					writeWsControlItem(i);
+					outItems += i;
 
 					stats->addActivity(s->route.toUtf8(), 1);
 				}
 			}
+			else if(item.type == WsControlPacket::Item::Ack)
+			{
+				int reqId = item.requestId.toInt();
+				s->ack(reqId);
+			}
 		}
+
+		if(!outItems.isEmpty())
+			writeWsControlItems(outItems);
 
 		if(stateClient && !updateSids.isEmpty())
 		{
@@ -2356,6 +2601,32 @@ private slots:
 				httpControlRespond(req, 405, "Method Not Allowed", "Method not allowed: " + req->requestMethod() + ".\n", QByteArray(), headers);
 			}
 		}
+		else if(path == "/recover")
+		{
+			if(req->requestMethod() == "POST")
+			{
+				QString message = "Updated";
+				if(responseContentType == "application/json")
+				{
+					QVariantMap obj;
+					obj["message"] = message;
+					QString body = QJsonDocument(QJsonObject::fromVariantMap(obj)).toJson(QJsonDocument::Compact);
+					httpControlRespond(req, 200, "OK", body + "\n", responseContentType, HttpHeaders());
+				}
+				else // text/plain
+				{
+					httpControlRespond(req, 200, "OK", message + "\n", responseContentType, HttpHeaders());
+				}
+
+				recoverCommand();
+			}
+			else
+			{
+				HttpHeaders headers;
+				headers += HttpHeader("Allow", "POST");
+				httpControlRespond(req, 405, "Method Not Allowed", "Method not allowed: " + req->requestMethod() + ".\n", QByteArray(), headers);
+			}
+		}
 		else
 		{
 			httpControlRespond(req, 404, "Not Found", "Not Found\n");
@@ -2451,7 +2722,11 @@ private slots:
 
 		(*sessionsByChannel)[channel] += hs;
 
-		log_info("subscribe %s channel=%s", qPrintable(hs->requestUri().toString(QUrl::FullyEncoded)), qPrintable(channel));
+		QString msg = QString("subscribe %1 channel=%2").arg(hs->requestUri().toString(QUrl::FullyEncoded), channel);
+		if(hs->isRetry())
+			msg += " retry";
+
+		log_info("%s", qPrintable(msg));
 
 		stats->addSubscription(mode == Instruct::ResponseHold ? "response" : "stream", channel);
 		addSub(channel);
@@ -2504,30 +2779,57 @@ private slots:
 	{
 		HttpSession *hs = (HttpSession *)sender();
 
+		RetryRequestPacket rp = hs->retryPacket();
+
 		cs.httpSessions.remove(hs->rid());
 		delete hs;
+
+		if(!rp.requests.isEmpty())
+			writeRetryPacket(rp);
+	}
+
+	void wssession_send(int reqId, const QByteArray &type, const QByteArray &message)
+	{
+		WsSession *s = (WsSession *)sender();
+
+		WsControlPacket::Item i;
+		i.cid = s->cid.toUtf8();
+		i.requestId = QByteArray::number(reqId);
+		i.type = WsControlPacket::Item::Send;
+		i.contentType = type;
+		i.message = message;
+		i.queue = true;
+
+		writeWsControlItems(QList<WsControlPacket::Item>() << i);
 	}
 
 	void wssession_expired()
 	{
 		WsSession *s = (WsSession *)sender();
 
-		QSet<QString> unsubs = cs.removeWsSessionChannels(s);
+		removeWsSession(s);
+	}
 
-		foreach(const QString &channel, unsubs)
-			stats->removeSubscription("ws", channel, false);
+	void wssession_error()
+	{
+		WsSession *s = (WsSession *)sender();
 
-		cs.wsSessions.remove(s->cid);
-		delete s;
+		log_debug("ws session %s control error", qPrintable(s->cid));
+
+		WsControlPacket::Item i;
+		i.cid = s->cid.toUtf8();
+		i.type = WsControlPacket::Item::Cancel;
+
+		writeWsControlItems(QList<WsControlPacket::Item>() << i);
+
+		removeWsSession(s);
 	}
 
 	void sub_subscribed()
 	{
 		Subscription *sub = (Subscription *)sender();
 
-		QSet<HttpSession*> sessions = cs.streamSessionsByChannel.value(sub->channel());
-		foreach(HttpSession *hs, sessions)
-			hs->update();
+		updateSessions(sub->channel());
 	}
 
 	void stats_connectionsRefreshed(const QList<QByteArray> &ids)
@@ -2600,6 +2902,15 @@ private slots:
 
 		deferreds.remove(report);
 		report = 0;
+	}
+
+	void deferred_finished(const DeferredResult &result)
+	{
+		Q_UNUSED(result);
+
+		Deferred *w = (Deferred *)sender();
+
+		deferreds.remove(w);
 	}
 };
 

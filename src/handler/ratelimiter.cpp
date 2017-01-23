@@ -31,10 +31,43 @@ class RateLimiter::Private : public QObject
 	Q_OBJECT
 
 public:
+	class ActionItem
+	{
+	public:
+		Action *action;
+		int weight;
+
+		ActionItem(Action *_action = 0, int _weight = 0) :
+			action(_action),
+			weight(_weight)
+		{
+		}
+	};
+
+	class Bucket
+	{
+	public:
+		QList<ActionItem> actions;
+		int weight;
+		int debt;
+
+		Bucket() :
+			weight(0),
+			debt(0)
+		{
+		}
+
+		~Bucket()
+		{
+			foreach(const ActionItem &i, actions)
+				delete i.action;
+		}
+	};
+
 	int rate;
 	int hwm;
 	bool batchWaitEnabled;
-	QMap<QString, QList<Action*> > buckets;
+	QMap<QString, Bucket> buckets;
 	QString lastKey;
 	QTimer *timer;
 	bool firstPass;
@@ -60,15 +93,6 @@ public:
 		timer->disconnect(this);
 		timer->setParent(0);
 		timer->deleteLater();
-
-		QMapIterator<QString, QList<Action*> > it(buckets);
-		while(it.hasNext())
-		{
-			it.next();
-			QList<Action*> bucket = it.value();
-
-			qDeleteAll(bucket);
-		}
 	}
 
 	void setRate(int actionsPerSecond)
@@ -98,13 +122,14 @@ public:
 		setup();
 	}
 
-	bool addAction(const QString &key, Action *action)
+	bool addAction(const QString &key, int weight, Action *action)
 	{
-		QList<Action*> &bucket = buckets[key];
-		if(hwm > 0 && bucket.count() >= hwm)
+		Bucket &bucket = buckets[key];
+		if(hwm > 0 && bucket.weight + weight > hwm)
 			return false;
 
-		bucket += action;
+		bucket.actions += ActionItem(action, weight);
+		bucket.weight += weight;
 
 		setup();
 		return true;
@@ -184,7 +209,7 @@ private:
 
 		lastBatchEmpty = false;
 
-		QMap<QString, QList<Action*> >::iterator it;
+		QMap<QString, Bucket>::iterator it;
 
 		if(!lastKey.isNull())
 		{
@@ -203,12 +228,44 @@ private:
 		int processed = 0;
 		while((batchSize < 1 || processed < batchSize) && it != buckets.end())
 		{
-			QList<Action*> &bucket = it.value();
+			Bucket &bucket = it.value();
 
 			QString key = it.key();
-			Action *action = bucket.takeFirst();
 
-			if(bucket.isEmpty())
+			if(bucket.debt <= 0)
+			{
+				ActionItem ai = bucket.actions.takeFirst();
+				Action *action = ai.action;
+				int weight = ai.weight;
+
+				bucket.weight -= weight;
+
+				bool ret = action->execute();
+				delete action;
+
+				if(!self)
+					return false;
+
+				if(ret)
+				{
+					if(weight > 1)
+						processed += weight;
+					else
+						++processed;
+
+					if(batchSize >= 1 && processed > batchSize)
+					{
+						bucket.debt += processed - batchSize;
+					}
+				}
+			}
+			else
+			{
+				--bucket.debt;
+				++processed;
+			}
+
+			if(bucket.actions.isEmpty() && bucket.debt <= 0)
 			{
 				lastKey = key;
 				it = buckets.erase(it);
@@ -219,15 +276,6 @@ private:
 				if(it == buckets.end())
 					it = buckets.begin();
 			}
-
-			bool ret = action->execute();
-			delete action;
-
-			if(!self)
-				return false;
-
-			if(ret)
-				++processed;
 		}
 
 		if(it != buckets.end())
@@ -274,18 +322,18 @@ void RateLimiter::setBatchWaitEnabled(bool on)
 	d->batchWaitEnabled = on;
 }
 
-bool RateLimiter::addAction(const QString &key, Action *action)
+bool RateLimiter::addAction(const QString &key, Action *action, int weight)
 {
-	return d->addAction(key, action);
+	return d->addAction(key, weight, action);
 }
 
 RateLimiter::Action *RateLimiter::lastAction(const QString &key) const
 {
 	if(d->buckets.contains(key))
 	{
-		const QList<Action*> &bucket = d->buckets[key];
-		if(!bucket.isEmpty())
-			return bucket.last();
+		const Private::Bucket &bucket = d->buckets[key];
+		if(!bucket.actions.isEmpty())
+			return bucket.actions.last().action;
 	}
 
 	return 0;

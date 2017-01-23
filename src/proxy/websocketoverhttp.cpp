@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014-2016 Fanout, Inc.
+ * Copyright (C) 2014-2017 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -197,6 +197,8 @@ public:
 	bool peerClosing;
 	int peerCloseCode;
 	bool disconnecting;
+	bool disconnectSent;
+	bool updateQueued;
 	QTimer *keepAliveTimer;
 	QTimer *retryTimer;
 	int retries;
@@ -223,6 +225,8 @@ public:
 		peerClosing(false),
 		peerCloseCode(-1),
 		disconnecting(false),
+		disconnectSent(false),
+		updateQueued(false),
 		retries(0)
 	{
 		if(!g_disconnectManager)
@@ -255,6 +259,7 @@ public:
 
 		updating = false;
 		disconnecting = false;
+		updateQueued = false;
 
 		delete req;
 		req = 0;
@@ -339,6 +344,18 @@ public:
 		update();
 	}
 
+	void refresh()
+	{
+		// only allow refresh requests if connected
+		if(state == Connected && !disconnecting)
+		{
+			if(!updating)
+				update();
+			else
+				updateQueued = true;
+		}
+	}
+
 private:
 	bool canReceive() const
 	{
@@ -367,7 +384,10 @@ private:
 	bool needUpdate() const
 	{
 		// always send this right away
-		if(disconnecting)
+		if(disconnecting && !disconnectSent)
+			return true;
+
+		if(updateQueued)
 			return true;
 
 		bool cscm = canSendCompleteMessage();
@@ -405,6 +425,8 @@ private:
 		if(updating)
 			return;
 
+		updateQueued = false;
+
 		updating = true;
 
 		keepAliveTimer->stop();
@@ -427,9 +449,10 @@ private:
 		{
 			events += WsEvent("OPEN");
 		}
-		else if(disconnecting)
+		else if(disconnecting && !disconnectSent)
 		{
 			events += WsEvent("DISCONNECT");
+			disconnectSent = true;
 		}
 		else
 		{
@@ -629,7 +652,8 @@ private slots:
 				QByteArray name = h.first.mid(9);
 				if(meta.contains(name))
 					meta.removeAll(name);
-				meta += HttpHeader(name, h.second);
+				if(!h.second.isEmpty())
+					meta += HttpHeader(name, h.second);
 			}
 		}
 
@@ -679,7 +703,7 @@ private slots:
 			}
 		}
 
-		if(disconnecting)
+		if(disconnectSent)
 		{
 			cleanup();
 			emit q->disconnected();
@@ -916,6 +940,11 @@ WebSocketOverHttp::~WebSocketOverHttp()
 void WebSocketOverHttp::setConnectionId(const QByteArray &id)
 {
 	d->cid = id;
+}
+
+void WebSocketOverHttp::refresh()
+{
+	d->refresh();
 }
 
 void WebSocketOverHttp::clearDisconnectManager()

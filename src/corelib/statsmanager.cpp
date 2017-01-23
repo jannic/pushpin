@@ -109,6 +109,8 @@ public:
 		int messagesReceived;
 		int messagesSent;
 		int httpResponseMessagesSent;
+		int blocksReceived;
+		int blocksSent;
 		qint64 lastUpdate;
 
 		Report() :
@@ -118,6 +120,8 @@ public:
 			messagesReceived(0),
 			messagesSent(0),
 			httpResponseMessagesSent(0),
+			blocksReceived(-1),
+			blocksSent(-1),
 			lastUpdate(-1)
 		{
 		}
@@ -128,7 +132,9 @@ public:
 				connectionsMinutes == 0 &&
 				messagesReceived == 0 &&
 				messagesSent == 0 &&
-				httpResponseMessagesSent == 0);
+				httpResponseMessagesSent == 0 &&
+				blocksReceived <= 0 &&
+				blocksSent <= 0);
 		}
 	};
 
@@ -440,7 +446,7 @@ public:
 		write(p);
 	}
 
-	void sendMessage(const QString &channel, const QString &itemId, const QString &transport, int count)
+	void sendMessage(const QString &channel, const QString &itemId, const QString &transport, int count, int blocks)
 	{
 		if(!sock)
 			return;
@@ -451,6 +457,7 @@ public:
 		p.channel = channel.toUtf8();
 		p.itemId = itemId.toUtf8();
 		p.count = count;
+		p.blocks = blocks;
 		p.transport = transport.toUtf8();
 		write(p);
 	}
@@ -780,12 +787,16 @@ private slots:
 			p.messagesReceived = report->messagesReceived;
 			p.messagesSent = report->messagesSent;
 			p.httpResponseMessagesSent = report->httpResponseMessagesSent;
+			p.blocksReceived = report->blocksReceived;
+			p.blocksSent = report->blocksSent;
 
 			report->connectionsMaxStale = true;
 			report->connectionsMinutes = 0;
 			report->messagesReceived = 0;
 			report->messagesSent = 0;
 			report->httpResponseMessagesSent = 0;
+			report->blocksReceived = -1;
+			report->blocksSent = -1;
 
 			if(report->isEmpty())
 			{
@@ -865,9 +876,9 @@ void StatsManager::addActivity(const QByteArray &routeId, int count)
 		d->activityTimer->start(ACTIVITY_TIMEOUT);
 }
 
-void StatsManager::addMessage(const QString &channel, const QString &itemId, const QString &transport, int count)
+void StatsManager::addMessage(const QString &channel, const QString &itemId, const QString &transport, int count, int blocks)
 {
-	d->sendMessage(channel, itemId, transport, count);
+	d->sendMessage(channel, itemId, transport, count, blocks);
 }
 
 void StatsManager::addConnection(const QByteArray &id, const QByteArray &routeId, ConnectionType type, const QHostAddress &peerAddress, bool ssl, bool quiet)
@@ -970,6 +981,15 @@ void StatsManager::removeConnection(const QByteArray &id, bool linger)
 		d->updateConnectionsMax(routeId, now);
 }
 
+void StatsManager::refreshConnection(const QByteArray &id)
+{
+	Private::ConnectionInfo *c = d->connectionInfoById.value(id);
+	if(!c)
+		return;
+
+	d->sendConnected(c);
+}
+
 void StatsManager::addSubscription(const QString &mode, const QString &channel)
 {
 	Private::SubscriptionKey subKey(mode, channel);
@@ -1040,7 +1060,7 @@ void StatsManager::removeSubscription(const QString &mode, const QString &channe
 	}
 }
 
-void StatsManager::addMessageReceived(const QByteArray &routeId)
+void StatsManager::addMessageReceived(const QByteArray &routeId, int blocks)
 {
 	assert(d->reportsEnabled);
 
@@ -1048,10 +1068,18 @@ void StatsManager::addMessageReceived(const QByteArray &routeId)
 
 	++report->messagesReceived;
 
+	if(blocks > 0)
+	{
+		if(report->blocksReceived < 0)
+			report->blocksReceived = 0;
+
+		report->blocksReceived += blocks;
+	}
+
 	report->lastUpdate = QDateTime::currentMSecsSinceEpoch();
 }
 
-void StatsManager::addMessageSent(const QByteArray &routeId, const QString &transport)
+void StatsManager::addMessageSent(const QByteArray &routeId, const QString &transport, int blocks)
 {
 	assert(d->reportsEnabled);
 
@@ -1061,6 +1089,14 @@ void StatsManager::addMessageSent(const QByteArray &routeId, const QString &tran
 
 	if(transport == "http-response")
 		++report->httpResponseMessagesSent;
+
+	if(blocks > 0)
+	{
+		if(report->blocksSent < 0)
+			report->blocksSent = 0;
+
+		report->blocksSent += blocks;
+	}
 
 	report->lastUpdate = QDateTime::currentMSecsSinceEpoch();
 }
