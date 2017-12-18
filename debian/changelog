@@ -1,3 +1,11 @@
+pushpin (1.17.1-1) unstable; urgency=medium
+
+  * New upstream version
+  * Set standards-version to 4.1.2
+  * Set priority to optional
+
+ -- Jan Niehusmann <jan@debian.org>  Mon, 18 Dec 2017 21:11:03 +0100
+
 pushpin (1.17.0-1) unstable; urgency=medium
 
   * New upstream version
