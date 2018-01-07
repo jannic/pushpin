@@ -2,11 +2,9 @@
         daily
         missingok
         rotate 7
-	sharedscripts
+        sharedscripts
         postrotate
-                if [ -e /var/run/pushpin.pid ]; then
-			kill -HUP $(cat /var/run/pushpin.pid)
-                fi
+                invoke-rc.d --quiet pushpin reload > /dev/null
         endscript
         compress
         notifempty
