@@ -9,6 +9,7 @@ ExecStart=/usr/bin/stdbuf -oL /usr/bin/pushpin
 ExecReload=/bin/kill -HUP $MAINPID
 User=pushpin
 SyslogIdentifier=pushpin
+Restart=always
 
 [Install]
 WantedBy=multi-user.target
