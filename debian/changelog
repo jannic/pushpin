@@ -1,6 +1,7 @@
 pushpin (1.17.2-3) UNRELEASED; urgency=medium
 
   * Point Vcs-* to salsa repository
+  * Set standards-version to 4.1.4
 
  -- Jan Niehusmann <jan@debian.org>  Fri, 11 May 2018 23:08:34 +0200
 

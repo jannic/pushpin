@@ -3,7 +3,7 @@ Section: net
 Priority: optional
 Maintainer: Jan Niehusmann <jan@debian.org>
 Build-Depends: debhelper (>= 9), qtbase5-dev, qt5-qmake, qtchooser, libzmq3-dev (>= 2.0), pkg-config, qconf
-Standards-Version: 4.1.2
+Standards-Version: 4.1.4
 Homepage: https://github.com/fanout/pushpin
 Vcs-Git: https://salsa.debian.org/jan/pushpin.git
 Vcs-Browser: https://salsa.debian.org/jan/pushpin
