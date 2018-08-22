@@ -1,3 +1,9 @@
+pushpin (1.18.0-1) unstable; urgency=medium
+
+  * New upstream version
+
+ -- Jan Niehusmann <jan@debian.org>  Wed, 22 Aug 2018 15:32:05 +0200
+
 pushpin (1.17.2-3) unstable; urgency=medium
 
   * Point Vcs-* to salsa repository
