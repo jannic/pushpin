@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014-2017 Fanout, Inc.
+ * Copyright (C) 2014-2018 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -276,13 +276,8 @@ public:
 		state = Idle;
 	}
 
-	void start()
+	void sanitizeRequestHeaders()
 	{
-		state = Connecting;
-
-		if(cid.isEmpty())
-			cid = UuidUtil::createUuid();
-
 		// don't forward certain headers
 		requestData.headers.removeAll("Upgrade");
 		requestData.headers.removeAll("Accept");
@@ -298,6 +293,14 @@ public:
 				--n; // adjust position
 			}
 		}
+	}
+
+	void start()
+	{
+		state = Connecting;
+
+		if(cid.isEmpty())
+			cid = UuidUtil::createUuid();
 
 		if(requestData.uri.scheme() == "wss")
 			requestData.uri.setScheme("https");
@@ -552,6 +555,8 @@ private:
 	void doRequest()
 	{
 		assert(!req);
+
+		emit q->aboutToSendRequest();
 
 		req = zhttpManager->createRequest();
 		req->setParent(this);
@@ -852,10 +857,13 @@ private slots:
 	{
 		bool retry = false;
 
-		switch(req->errorCondition())
+		ZhttpRequest::ErrorCondition reqError = req->errorCondition();
+
+		switch(reqError)
 		{
 			case ZhttpRequest::ErrorConnect:
 			case ZhttpRequest::ErrorConnectTimeout:
+			case ZhttpRequest::ErrorTls:
 				// these errors mean the server wasn't reached at all
 				retry = true;
 				break;
@@ -893,6 +901,13 @@ private slots:
 			retryTimer->start(delay);
 			return;
 		}
+
+		if(reqError == ZhttpRequest::ErrorConnect)
+			errorCondition = WebSocket::ErrorConnect;
+		else if(reqError == ZhttpRequest::ErrorConnectTimeout)
+			errorCondition = WebSocket::ErrorConnectTimeout;
+		else if(reqError == ZhttpRequest::ErrorTls)
+			errorCondition = WebSocket::ErrorTls;
 
 		cleanup();
 		emit q->error();
@@ -1004,6 +1019,9 @@ void WebSocketOverHttp::start(const QUrl &uri, const HttpHeaders &headers)
 
 	d->requestData.uri = uri;
 	d->requestData.headers = headers;
+
+	d->sanitizeRequestHeaders();
+
 	d->start();
 }
 
@@ -1100,6 +1118,13 @@ WebSocket::Frame WebSocketOverHttp::readFrame()
 void WebSocketOverHttp::close(int code)
 {
 	d->close(code);
+}
+
+void WebSocketOverHttp::setHeaders(const HttpHeaders &headers)
+{
+	d->requestData.headers = headers;
+
+	d->sanitizeRequestHeaders();
 }
 
 #include "websocketoverhttp.moc"

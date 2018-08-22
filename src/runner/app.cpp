@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Fanout, Inc.
+ * Copyright (C) 2016-2018 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -201,13 +201,15 @@ public:
 	ArgsData args;
 	QList<Service*> services;
 	bool stopping;
+	bool errored;
 
 	Private(App *_q) :
 		QObject(_q),
 		q(_q),
-		stopping(false)
+		stopping(false),
+		errored(false)
 	{
-		connect(ProcessQuit::instance(), &ProcessQuit::quit, this, &Private::doQuit);
+		connect(ProcessQuit::instance(), &ProcessQuit::quit, this, &Private::processQuit);
 		connect(ProcessQuit::instance(), &ProcessQuit::hup, this, &Private::reload);
 	}
 
@@ -336,7 +338,7 @@ public:
 		QStringList serviceNames = settings.value("runner/services").toStringList();
 		trimlist(&serviceNames);
 
-		QString httpPortStr = settings.value("runner/http_port", "7999").toString();
+		QString httpPortStr = settings.value("runner/http_port").toString();
 
 		QStringList httpsPortStrs = settings.value("runner/https_ports").toStringList();
 		trimlist(&httpsPortStrs);
@@ -408,13 +410,38 @@ public:
 		}
 		else
 		{
-			QPair<QHostAddress, int> p = parsePort(httpPortStr);
-			interfaces += Mongrel2Service::Interface(p.first, p.second, false);
+			if(!httpPortStr.isEmpty())
+			{
+				QPair<QHostAddress, int> p = parsePort(httpPortStr);
+				if(p.second < 1)
+				{
+					log_error("invalid http port: %s", qPrintable(httpPortStr));
+					emit q->quit(1);
+					return;
+				}
+
+				interfaces += Mongrel2Service::Interface(p.first, p.second, false);
+			}
+
 			foreach(const QString &httpsPortStr, httpsPortStrs)
 			{
 				QPair<QHostAddress, int> p = parsePort(httpsPortStr);
+				if(p.second < 1)
+				{
+					log_error("invalid https port: %s", qPrintable(httpsPortStr));
+					emit q->quit(1);
+					return;
+				}
+
 				interfaces += Mongrel2Service::Interface(p.first, p.second, true);
 			}
+		}
+
+		if(interfaces.isEmpty())
+		{
+			log_error("no mongrel2 ports configured");
+			emit q->quit(1);
+			return;
 		}
 
 		if(args.id >= 0)
@@ -442,7 +469,7 @@ public:
 			}
 
 			foreach(const Mongrel2Service::Interface &i, interfaces)
-				services += new Mongrel2Service(m2Bin, QDir(runDir).filePath(QString("%1mongrel2.sqlite").arg(filePrefix)), "default_" + QString::number(i.port), logDir, filePrefix, i.port, i.ssl, this);
+				services += new Mongrel2Service(m2Bin, QDir(runDir).filePath(QString("%1mongrel2.sqlite").arg(filePrefix)), "default_" + QString::number(i.port), runDir, logDir, filePrefix, i.port, i.ssl, this);
 		}
 
 		if(serviceNames.contains("m2adapter"))
@@ -529,8 +556,13 @@ private:
 		if(services.isEmpty())
 		{
 			log_info("stopped");
-			emit q->quit(0);
+			doQuit();
 		}
+	}
+
+	void doQuit()
+	{
+		emit q->quit(errored ? 1 : 0);
 	}
 
 private slots:
@@ -577,6 +609,8 @@ private slots:
 		services.removeAll(s);
 		delete s;
 
+		errored = true;
+
 		if(stopping)
 		{
 			checkStopped();
@@ -601,7 +635,7 @@ private slots:
 		}
 	}
 
-	void doQuit()
+	void processQuit()
 	{
 		if(!stopping)
 		{
@@ -617,7 +651,7 @@ private slots:
 			ProcessQuit::cleanup();
 
 			// if we were already stopping, then exit immediately
-			emit q->quit(0);
+			doQuit();
 		}
 	}
 };
