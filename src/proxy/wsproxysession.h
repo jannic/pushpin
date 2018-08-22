@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014-2017 Fanout, Inc.
+ * Copyright (C) 2014-2018 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -55,10 +55,11 @@ public:
 	WebSocket *inSocket() const;
 	WebSocket *outSocket() const;
 
+	void setDebugEnabled(bool enabled);
 	void setDefaultSigKey(const QByteArray &iss, const QByteArray &key);
 	void setDefaultUpstreamKey(const QByteArray &key);
 	void setAcceptXForwardedProtocol(bool enabled);
-	void setUseXForwardedProtocol(bool enabled);
+	void setUseXForwardedProtocol(bool protoEnabled, bool protocolEnabled);
 	void setXffRules(const XffRule &untrusted, const XffRule &trusted);
 	void setOrigHeadersNeedMark(const QList<QByteArray> &names);
 

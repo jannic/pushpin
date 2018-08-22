@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014-2017 Fanout, Inc.
+ * Copyright (C) 2014-2018 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -243,17 +243,23 @@ public:
 	StatsManager *statsManager;
 	WsControlManager *wsControlManager;
 	WsControlSession *wsControl;
+	DomainMap::Entry route;
+	bool debug;
 	QByteArray defaultSigIss;
 	QByteArray defaultSigKey;
 	QByteArray defaultUpstreamKey;
 	bool passToUpstream;
 	bool acceptXForwardedProtocol;
+	bool useXForwardedProto;
 	bool useXForwardedProtocol;
 	XffRule xffRule;
 	XffRule xffTrustedRule;
 	QList<QByteArray> origHeadersNeedMark;
 	HttpRequestData requestData;
+	bool trustedClient;
 	QHostAddress logicalClientAddress;
+	QByteArray sigIss;
+	QByteArray sigKey;
 	WebSocket *inSock;
 	WebSocket *outSock;
 	int inPendingBytes;
@@ -265,6 +271,7 @@ public:
 	QByteArray channelPrefix;
 	QList<DomainMap::Target> targets;
 	DomainMap::Target target;
+	QHostAddress clientAddress;
 	bool acceptGripMessages;
 	QByteArray messagePrefix;
 	bool detached;
@@ -284,9 +291,12 @@ public:
 		statsManager(_statsManager),
 		wsControlManager(_wsControlManager),
 		wsControl(0),
+		debug(false),
 		passToUpstream(false),
 		acceptXForwardedProtocol(false),
+		useXForwardedProto(false),
 		useXForwardedProtocol(false),
+		trustedClient(false),
 		inSock(0),
 		outSock(0),
 		inPendingBytes(0),
@@ -366,38 +376,38 @@ public:
 		requestData.uri = inSock->requestUri();
 		requestData.headers = inSock->requestHeaders();
 
-		bool trustedClient = ProxyUtil::checkTrustedClient("wsproxysession", q, requestData, defaultUpstreamKey);
+		trustedClient = ProxyUtil::checkTrustedClient("wsproxysession", q, requestData, defaultUpstreamKey);
 
 		logicalClientAddress = ProxyUtil::getLogicalAddress(requestData.headers, trustedClient ? xffTrustedRule : xffRule, inSock->peerAddress());
 
 		QString host = requestData.uri.host();
 
-		if(entry.isNull())
+		route = entry;
+
+		if(route.isNull())
 		{
 			log_warning("wsproxysession: %p %s has 0 routes", q, qPrintable(host));
 			reject(false, 502, "Bad Gateway", QString("No route for host: %1").arg(host));
 			return;
 		}
 
-		if(!entry.asHost.isEmpty())
-			ProxyUtil::applyHost(&requestData.uri, entry.asHost);
+		if(!route.asHost.isEmpty())
+			ProxyUtil::applyHost(&requestData.uri, route.asHost);
 
 		QByteArray path = requestData.uri.path(QUrl::FullyEncoded).toUtf8();
 
-		if(entry.pathRemove > 0)
-			path = path.mid(entry.pathRemove);
+		if(route.pathRemove > 0)
+			path = path.mid(route.pathRemove);
 
-		if(!entry.pathPrepend.isEmpty())
-			path = entry.pathPrepend + path;
+		if(!route.pathPrepend.isEmpty())
+			path = route.pathPrepend + path;
 
 		requestData.uri.setPath(QString::fromUtf8(path), QUrl::StrictMode);
 
-		QByteArray sigIss;
-		QByteArray sigKey;
-		if(!entry.sigIss.isEmpty() && !entry.sigKey.isEmpty())
+		if(!route.sigIss.isEmpty() && !route.sigKey.isEmpty())
 		{
-			sigIss = entry.sigIss;
-			sigKey = entry.sigKey;
+			sigIss = route.sigIss;
+			sigKey = route.sigKey;
 		}
 		else
 		{
@@ -405,22 +415,22 @@ public:
 			sigKey = defaultSigKey;
 		}
 
-		pathBeg = entry.pathBeg;
-		routeId = entry.id;
-		channelPrefix = entry.prefix;
-		targets = entry.targets;
+		pathBeg = route.pathBeg;
+		routeId = route.id;
+		channelPrefix = route.prefix;
+		targets = route.targets;
 
 		log_debug("wsproxysession: %p %s has %d routes", q, qPrintable(host), targets.count());
 
-		foreach(const HttpHeader &h, entry.headers)
+		foreach(const HttpHeader &h, route.headers)
 		{
 			requestData.headers.removeAll(h.first);
 			requestData.headers += HttpHeader(h.first, h.second);
 		}
 
-		QHostAddress clientAddress = inSock->peerAddress();
+		clientAddress = inSock->peerAddress();
 
-		ProxyUtil::manipulateRequestHeaders("wsproxysession", q, &requestData, trustedClient, entry, sigIss, sigKey, acceptXForwardedProtocol, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, clientAddress, InspectData(), true);
+		ProxyUtil::manipulateRequestHeaders("wsproxysession", q, &requestData, trustedClient, route, sigIss, sigKey, acceptXForwardedProtocol, useXForwardedProto, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, clientAddress, InspectData(), true);
 
 		// don't proxy extensions, as we may not know how to handle them
 		requestData.headers.removeAll("Sec-WebSocket-Extensions");
@@ -446,7 +456,14 @@ public:
 	{
 		if(targets.isEmpty())
 		{
-			reject(false, 502, "Bad Gateway", "Error while proxying to origin.");
+			QString msg = "Error while proxying to origin.";
+
+			QStringList targetStrs;
+			foreach(const DomainMap::Target &t, route.targets)
+				targetStrs += ProxyUtil::targetToString(t);
+			QString dmsg = QString("Unable to connect to any targets. Tried: %1").arg(targetStrs.join(", "));
+
+			reject(true, 502, "Bad Gateway", msg, dmsg);
 			return;
 		}
 
@@ -501,6 +518,7 @@ public:
 			{
 				WebSocketOverHttp *woh = new WebSocketOverHttp(zhttpManager, this);
 				woh->setConnectionId(publicCid);
+				connect(woh, &WebSocketOverHttp::aboutToSendRequest, this, &Private::out_aboutToSendRequest);
 				outSock = woh;
 			}
 			else
@@ -508,7 +526,7 @@ public:
 				// websockets don't work with zhttp req mode
 				if(zhttpManager->clientUsesReq())
 				{
-					reject(false, 502, "Bad Gateway", "Error while proxying to origin.");
+					reject(false, 502, "Bad Gateway", "Error while proxying to origin.", "WebSockets cannot be used with zhttpreq target");
 					return;
 				}
 
@@ -554,9 +572,16 @@ public:
 		logConnection(proxied, code, body.size());
 	}
 
+	void reject(bool proxied, int code, const QString &reason, const QString &errorMessage, const QString &debugErrorMessage)
+	{
+		QString msg = debug ? debugErrorMessage : errorMessage;
+
+		reject(proxied, code, reason.toUtf8(), HttpHeaders(), (msg + '\n').toUtf8());
+	}
+
 	void reject(bool proxied, int code, const QString &reason, const QString &errorMessage)
 	{
-		reject(proxied, code, reason.toUtf8(), HttpHeaders(), (errorMessage + '\n').toUtf8());
+		reject(proxied, code, reason, errorMessage, errorMessage);
 	}
 
 	void tryReadIn()
@@ -932,6 +957,15 @@ private slots:
 		}
 	}
 
+	void out_aboutToSendRequest()
+	{
+		WebSocketOverHttp *woh = (WebSocketOverHttp *)sender();
+
+		ProxyUtil::manipulateRequestHeaders("wsproxysession", q, &requestData, trustedClient, route, sigIss, sigKey, acceptXForwardedProtocol, useXForwardedProto, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, clientAddress, InspectData(), true);
+
+		woh->setHeaders(requestData.headers);
+	}
+
 	void wsControl_sendEventReceived(WebSocket::Frame::Type type, const QByteArray &message, bool queue)
 	{
 		// this method accepts a full message, which must be typed
@@ -1098,6 +1132,11 @@ WebSocket *WsProxySession::outSocket() const
 	return d->outSock;
 }
 
+void WsProxySession::setDebugEnabled(bool enabled)
+{
+	d->debug = enabled;
+}
+
 void WsProxySession::setDefaultSigKey(const QByteArray &iss, const QByteArray &key)
 {
 	d->defaultSigIss = iss;
@@ -1114,9 +1153,10 @@ void WsProxySession::setAcceptXForwardedProtocol(bool enabled)
 	d->acceptXForwardedProtocol = enabled;
 }
 
-void WsProxySession::setUseXForwardedProtocol(bool enabled)
+void WsProxySession::setUseXForwardedProtocol(bool protoEnabled, bool protocolEnabled)
 {
-	d->useXForwardedProtocol = enabled;
+	d->useXForwardedProto = protoEnabled;
+	d->useXForwardedProtocol = protocolEnabled;
 }
 
 void WsProxySession::setXffRules(const XffRule &untrusted, const XffRule &trusted)

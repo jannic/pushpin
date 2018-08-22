@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2017 Fanout, Inc.
+ * Copyright (C) 2012-2018 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -370,8 +370,8 @@ public:
 
 			ps->setRoute(route);
 			ps->setDefaultSigKey(config.sigIss, config.sigKey);
-			ps->setAcceptXForwardedProtocol(config.acceptXForwardedProtocol);
-			ps->setUseXForwardedProtocol(config.useXForwardedProtocol);
+			ps->setAcceptXForwardedProtocol(config.acceptXForwardedProto);
+			ps->setUseXForwardedProtocol(config.setXForwardedProto, config.setXForwardedProtocol);
 			ps->setXffRules(config.xffUntrustedRule, config.xffTrustedRule);
 			ps->setOrigHeadersNeedMark(config.origHeadersNeedMark);
 			ps->setProxyInitialResponseEnabled(true);
@@ -408,10 +408,11 @@ public:
 
 		connectionManager.setProxyForConnection(sock, ps);
 
+		ps->setDebugEnabled(config.debug || route.debug);
 		ps->setDefaultSigKey(config.sigIss, config.sigKey);
 		ps->setDefaultUpstreamKey(config.upstreamKey);
-		ps->setAcceptXForwardedProtocol(config.acceptXForwardedProtocol);
-		ps->setUseXForwardedProtocol(config.useXForwardedProtocol);
+		ps->setAcceptXForwardedProtocol(config.acceptXForwardedProto);
+		ps->setUseXForwardedProtocol(config.setXForwardedProto, config.setXForwardedProtocol);
 		ps->setXffRules(config.xffUntrustedRule, config.xffTrustedRule);
 		ps->setOrigHeadersNeedMark(config.origHeadersNeedMark);
 
@@ -487,7 +488,7 @@ public:
 		}
 		else
 		{
-			if(config.acceptXForwardedProtocol && isXForwardedProtocolTls(req->requestHeaders()))
+			if(config.acceptXForwardedProto && isXForwardedProtocolTls(req->requestHeaders()))
 				req->setIsTls(true);
 		}
 
@@ -549,7 +550,7 @@ public:
 		if(!sock)
 			return;
 
-		if(config.acceptXForwardedProtocol && isXForwardedProtocolTls(sock->requestHeaders()))
+		if(config.acceptXForwardedProto && isXForwardedProtocolTls(sock->requestHeaders()))
 			sock->setIsTls(true);
 
 		QUrl requestUri = sock->requestUri();
