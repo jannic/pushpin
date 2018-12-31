@@ -81,7 +81,9 @@ public:
 	bool inClosed;
 	bool outClosed;
 	int closeCode;
+	QString closeReason;
 	int peerCloseCode;
+	QString peerCloseReason;
 	QVariant userData;
 	bool pendingUpdate;
 	ErrorCondition errorCondition;
@@ -260,6 +262,7 @@ public:
 		state = Connected;
 
 		ZhttpResponsePacket out;
+		out.type = ZhttpResponsePacket::Data;
 		out.code = responseCode;
 		out.reason = responseReason;
 		out.headers = responseHeaders;
@@ -303,17 +306,18 @@ public:
 		update();
 	}
 
-	void close(int code)
+	void close(int code, const QString &reason)
 	{
 		if((state != Connected && state != ConnectedPeerClosed) || outClosed)
 			return;
 
 		outClosed = true;
 		closeCode = code;
+		closeReason = reason;
 
 		if(outFrames.isEmpty())
 		{
-			writeClose(code);
+			writeClose(code, reason);
 
 			if(state == ConnectedPeerClosed)
 			{
@@ -368,7 +372,7 @@ public:
 
 			if(outFrames.isEmpty() && outClosed)
 			{
-				writeClose(closeCode);
+				writeClose(closeCode, closeReason);
 
 				if(state == ConnectedPeerClosed)
 				{
@@ -505,7 +509,7 @@ public:
 		}
 		else if(packet.type == ZhttpRequestPacket::Close)
 		{
-			handlePeerClose(packet.code);
+			handlePeerClose(packet.code, QString::fromUtf8(packet.body));
 		}
 		else if(packet.type == ZhttpRequestPacket::Credit)
 		{
@@ -663,7 +667,7 @@ public:
 		}
 		else if(packet.type == ZhttpResponsePacket::Close)
 		{
-			handlePeerClose(packet.code);
+			handlePeerClose(packet.code, QString::fromUtf8(packet.body));
 		}
 		else if(packet.type == ZhttpResponsePacket::Credit)
 		{
@@ -684,12 +688,13 @@ public:
 		}
 	}
 
-	void handlePeerClose(int code)
+	void handlePeerClose(int code, const QString &reason)
 	{
 		if((state == Connected || state == ClosedPeerConnected) && !inClosed)
 		{
 			inClosed = true;
 			peerCloseCode = code;
+			peerCloseReason = reason;
 
 			if(inFrames.isEmpty())
 			{
@@ -833,13 +838,15 @@ public:
 		}
 	}
 
-	void writeClose(int code = -1)
+	void writeClose(int code = -1, const QString &reason = QString())
 	{
 		if(server)
 		{
 			ZhttpResponsePacket out;
 			out.type = ZhttpResponsePacket::Close;
 			out.code = code;
+			if(!reason.isEmpty())
+				out.body = reason.toUtf8();
 			writePacket(out);
 		}
 		else
@@ -847,6 +854,8 @@ public:
 			ZhttpRequestPacket out;
 			out.type = ZhttpRequestPacket::Close;
 			out.code = code;
+			if(!reason.isEmpty())
+				out.body = reason.toUtf8();
 			writePacket(out);
 		}
 	}
@@ -1193,6 +1202,11 @@ int ZWebSocket::peerCloseCode() const
 	return d->peerCloseCode;
 }
 
+QString ZWebSocket::peerCloseReason() const
+{
+	return d->peerCloseReason;
+}
+
 WebSocket::ErrorCondition ZWebSocket::errorCondition() const
 {
 	return d->errorCondition;
@@ -1208,9 +1222,9 @@ WebSocket::Frame ZWebSocket::readFrame()
 	return d->readFrame();
 }
 
-void ZWebSocket::close(int code)
+void ZWebSocket::close(int code, const QString &reason)
 {
-	d->close(code);
+	d->close(code, reason);
 }
 
 void ZWebSocket::setupClient(ZhttpManager *manager)
