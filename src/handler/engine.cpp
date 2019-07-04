@@ -1503,23 +1503,31 @@ public:
 			log_info("in pull: %s", qPrintable(config.pushInSpec));
 		}
 
-		if(!config.pushInSubSpec.isEmpty())
+		if(!config.pushInSubSpecs.isEmpty())
 		{
 			inSubSock = new QZmq::Socket(QZmq::Socket::Sub, this);
 			inSubSock->setSendHwm(SUB_SNDHWM);
 			inSubSock->setShutdownWaitTime(0);
 
 			QString errorMessage;
-			if(!ZUtil::setupSocket(inSubSock, config.pushInSubSpec, true, config.ipcFileMode, &errorMessage))
+			if(!ZUtil::setupSocket(inSubSock, config.pushInSubSpecs, !config.pushInSubConnect, config.ipcFileMode, &errorMessage))
 			{
 					log_error("%s", qPrintable(errorMessage));
 					return false;
 			}
 
+			if(config.pushInSubConnect)
+			{
+				// some sane TCP keep-alive settings
+				// idle=30, cnt=6, intvl=5
+				inSubSock->setTcpKeepAliveEnabled(true);
+				inSubSock->setTcpKeepAliveParameters(30, 6, 5);
+			}
+
 			inSubValve = new QZmq::Valve(inSubSock, this);
 			connect(inSubValve, &QZmq::Valve::readyRead, this, &Private::inSub_readyRead);
 
-			log_info("in sub: %s", qPrintable(config.pushInSubSpec));
+			log_info("in sub: %s", qPrintable(config.pushInSubSpecs.join(", ")));
 		}
 
 		if(!config.retryOutSpec.isEmpty())
@@ -2222,8 +2230,8 @@ private slots:
 				out["command"] = config.commandSpec.toUtf8();
 			if(!config.pushInSpec.isEmpty())
 				out["publish-pull"] = config.pushInSpec.toUtf8();
-			if(!config.pushInSubSpec.isEmpty())
-				out["publish-sub"] = config.pushInSubSpec.toUtf8();
+			if(!config.pushInSubSpecs.isEmpty() && !config.pushInSubConnect)
+				out["publish-sub"] = config.pushInSubSpecs[0].toUtf8();
 			req->respond(out);
 			delete req;
 		}
@@ -2246,6 +2254,56 @@ private slots:
 		}
 	}
 
+	QVariant parseJsonOrTnetstring(const QByteArray &message, bool *ok = 0, QString *errorMessage = 0) {
+		QVariant data;
+		bool ok_;
+		if(message.length() > 0 && message[0] == 'J') {
+			QJsonParseError e;
+			QJsonDocument doc = QJsonDocument::fromJson(message.mid(1), &e);
+			if(e.error != QJsonParseError::NoError)
+			{
+				if(errorMessage)
+					*errorMessage = QString("received message with invalid format (json parse failed)");
+				if(ok)
+					*ok = false;
+				return data;
+			}
+
+			if(doc.isObject())
+			{
+				data = doc.object().toVariantMap();
+			}
+			else
+			{
+				if(errorMessage)
+					*errorMessage = QString("received message with invalid format (not a valid json object)");
+				if(ok)
+					*ok = false;
+				return data;
+			}
+		}
+		else
+		{
+			int offset = 0;
+			if(message.length() > 0 && message[0] == 'T') {
+				offset = 1;
+			}
+
+			data = TnetString::toVariant(message, offset, &ok_);
+			if(!ok_)
+			{
+				if(errorMessage)
+					*errorMessage = QString("received message with invalid format (tnetstring parse failed)");
+				if(ok)
+					*ok = false;
+				return data;
+			}
+		}
+		if(ok)
+			*ok = true;
+		return data;
+	}
+
 	void inPull_readyRead(const QList<QByteArray> &message)
 	{
 		if(message.count() != 1)
@@ -2255,17 +2313,17 @@ private slots:
 		}
 
 		bool ok;
-		QVariant data = TnetString::toVariant(message[0], 0, &ok);
+		QString errorMessage;
+		QVariant data = parseJsonOrTnetstring(message[0], &ok, &errorMessage);
 		if(!ok)
 		{
-			log_warning("IN pull: received message with invalid format (tnetstring parse failed), skipping");
+			log_warning("IN pull: %s, skipping", qPrintable(errorMessage));
 			return;
 		}
 
 		if(log_outputLevel() >= LOG_LEVEL_DEBUG)
 			log_debug("IN pull: %s", qPrintable(TnetString::variantToString(data, -1)));
 
-		QString errorMessage;
 		PublishItem item = PublishItem::fromVariant(data, QString(), &ok, &errorMessage);
 		if(!ok)
 		{
@@ -2285,10 +2343,10 @@ private slots:
 		}
 
 		bool ok;
-		QVariant data = TnetString::toVariant(message[1], 0, &ok);
-		if(!ok)
-		{
-			log_warning("IN sub: received message with invalid format (tnetstring parse failed), skipping");
+		QString errorMessage;
+		QVariant data = parseJsonOrTnetstring(message[1], &ok, &errorMessage);
+		if(!ok) {
+			log_warning("IN sub: %s, skipping", qPrintable(errorMessage));
 			return;
 		}
 
@@ -2297,7 +2355,6 @@ private slots:
 		if(log_outputLevel() >= LOG_LEVEL_DEBUG)
 			log_debug("IN sub: channel=%s %s", qPrintable(channel), qPrintable(TnetString::variantToString(data, -1)));
 
-		QString errorMessage;
 		PublishItem item = PublishItem::fromVariant(data, channel, &ok, &errorMessage);
 		if(!ok)
 		{
