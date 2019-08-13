@@ -27,8 +27,11 @@
  */
 
 #include "mongrel2service.h"
+#include "tnetstring.h"
 
+#include <QDateTime>
 #include <QDir>
+#include <QVariant>
 #include <QVariantList>
 #include <QProcess>
 #include "log.h"
@@ -43,8 +46,10 @@ Mongrel2Service::Mongrel2Service(
 	const QString &filePrefix,
 	int port,
 	bool ssl,
+	int logLevel,
 	QObject *parent) :
-	Service(parent)
+	Service(parent),
+	logLevel_(logLevel)
 {
 	args_ += binFile;
 	args_ += configFile;
@@ -56,7 +61,10 @@ Mongrel2Service::Mongrel2Service(
 	QString pidFile = QDir(runDir).filePath(filePrefix + "mongrel2_" + QString::number(port) + ".pid");
 	QFile::remove(pidFile);
 
-	setStandardOutputFile(QDir(logDir).filePath(filePrefix + "mongrel2_" + QString::number(port) + ".log"));
+	if(!logDir.isEmpty())
+	{
+		setStandardOutputFile(QDir(logDir).filePath(filePrefix + "mongrel2_" + QString::number(port) + ".log"));
+	}
 }
 
 bool Mongrel2Service::generateConfigFile(const QString &m2shBinFile, const QString &configTemplateFile, const QString &runDir, const QString &logDir, const QString &ipcPrefix, const QString &filePrefix, const QString &certsDir, int clientBufferSize, const QList<Interface> &interfaces, int logLevel)
@@ -112,4 +120,77 @@ QStringList Mongrel2Service::arguments() const
 bool Mongrel2Service::acceptSighup() const
 {
 	return true;
+}
+
+
+QString Mongrel2Service::filterLogLine(const int level, const QString &line) const
+{
+	if(level > logLevel_)
+	{
+		return QString();
+	}
+	QString tstr = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz");
+	switch(level)
+	{
+		case LOG_LEVEL_DEBUG:
+			return "[DEBUG] " + tstr + " " + line;
+		case LOG_LEVEL_INFO:
+			return "[INFO] " + tstr + " " + line;
+		case LOG_LEVEL_WARNING:
+			return "[WARN] " + tstr + " " + line;
+		default:
+			return "[ERR] " + tstr + " " + line;
+	}
+}
+
+QString Mongrel2Service::formatLogLine(const QString &line) const
+{
+	if(line.isEmpty())
+	{
+		return line;
+	}
+
+	TnetString::Type type;
+	int dataOffset;
+	int dataSize;
+	bool isTnetString = TnetString::check(qPrintable(line), 0, &type, &dataOffset, &dataSize);
+	// if line is a valid tnet string, it most probably is an access log entry
+	if(isTnetString)
+	{
+		return filterLogLine(LOG_LEVEL_INFO, line);
+	}
+
+	int at = line.indexOf('[');
+        if(at == -1)
+	{
+		return filterLogLine(LOG_LEVEL_WARNING, "Can't parse mongrel2 log: " + line);
+	}
+	int end = line.indexOf(']', at);
+	if(end == -1)
+	{
+		return filterLogLine(LOG_LEVEL_WARNING, "Can't parse mongrel2 log: " + line);
+	}
+	int level;
+	if(line.midRef(at + 1, end - at - 1) == "INFO")
+	{
+		level = LOG_LEVEL_INFO;
+	}
+	else if(line.midRef(at + 1, end - at - 1) == "ERROR")
+	{
+		level = LOG_LEVEL_ERROR;
+	}
+	else if(line.midRef(at + 1, end - at - 1) == "WARN")
+	{
+		level = LOG_LEVEL_WARNING;
+	}
+	else
+	{
+		return filterLogLine(LOG_LEVEL_WARNING, "Can't parse severity: " + line);
+	}
+
+	if(line.size() > end + 1 && line.at(end + 1) == ' ')
+	{
+		end++;
+	}
+	return filterLogLine(level, line.mid(end + 1));
 }
