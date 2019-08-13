@@ -1,3 +1,9 @@
+pushpin (1.24.0-1) unstable; urgency=medium
+
+  * New upstream version
+
+ -- Jan Niehusmann <jan@debian.org>  Tue, 13 Aug 2019 10:25:28 +0200
+
 pushpin (1.23.0-1) unstable; urgency=medium
 
   * New upstream version
