@@ -20,6 +20,7 @@ export QMAKE_BUILDFLAGS
 
 override_dh_auto_configure:
 	./configure --prefix=/usr --qtselect=5 --configdir=/etc --extraconf="$$QMAKE_BUILDFLAGS" --verbose
+	echo "CONFIG += debug" >>conf.pri
 
 override_dh_auto_install:
 	dh_auto_install -- INSTALL_ROOT="$(CURDIR)/debian/pushpin"

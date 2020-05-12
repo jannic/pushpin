@@ -1,3 +1,9 @@
+pushpin (1.28.0-2) unstable; urgency=medium
+
+  * Create dbgsym package
+
+ -- Jan Niehusmann <jan@debian.org>  Thu, 14 May 2020 23:47:20 +0200
+
 pushpin (1.28.0-1) unstable; urgency=medium
 
   * New upstream version
