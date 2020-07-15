@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2019 Fanout, Inc.
+ * Copyright (C) 2016-2020 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -114,6 +114,7 @@ public:
 		NotStarted,
 		SendingFirstInstructResponse,
 		WaitingToUpdate,
+		Pausing,
 		Proxying,
 		SendingQueue,
 		Holding,
@@ -430,16 +431,6 @@ public:
 				}
 			}
 
-			QByteArray body;
-			if(f.haveBodyPatch)
-			{
-				body = applyBodyPatch(instruct.response.body, f.bodyPatch);
-			}
-			else
-			{
-				body = f.body;
-			}
-
 			QHash<QString, QString> prevIds;
 			QHashIterator<QString, Instruct::Channel> it(channels);
 			while(it.hasNext())
@@ -459,19 +450,29 @@ public:
 			if(fs.sendAction() == Filter::Drop)
 				return;
 
-			body = fs.process(body);
-			if(body.isNull())
-			{
-				errorMessage = QString("filter error: %1").arg(fs.errorMessage());
-				doError();
-				return;
-			}
-
 			// NOTE: http-response mode doesn't support a close
 			//   action since it's better to send a real response
 
 			if(f.action == PublishFormat::Send)
 			{
+				QByteArray body;
+				if(f.haveBodyPatch)
+				{
+					body = applyBodyPatch(instruct.response.body, f.bodyPatch);
+				}
+				else
+				{
+					body = f.body;
+				}
+
+				body = fs.process(body);
+				if(body.isNull())
+				{
+					errorMessage = QString("filter error: %1").arg(fs.errorMessage());
+					doError();
+					return;
+				}
+
 				respond(f.code, f.reason, f.headers, body, exposeHeaders);
 			}
 			else if(f.action == PublishFormat::Hint)
@@ -579,12 +580,18 @@ private:
 
 		if(instruct.holdMode == Instruct::ResponseHold)
 		{
+			state = Pausing;
+
+			// stop activity while pausing
+			timer->stop();
+
 			connect(req, &ZhttpRequest::paused, this, &Private::req_paused);
 			req->pause();
 		}
 		else
 		{
 			state = Proxying;
+
 			requestNextLink();
 		}
 	}
