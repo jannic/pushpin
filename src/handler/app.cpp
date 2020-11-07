@@ -40,6 +40,9 @@
 #include "engine.h"
 #include "config.h"
 
+#define DEFAULT_HTTP_MAX_HEADERS_SIZE 10000
+#define DEFAULT_HTTP_MAX_BODY_SIZE 1000000
+
 static void trimlist(QStringList *list)
 {
 	for(int n = 0; n < list->count(); ++n)
@@ -232,6 +235,12 @@ public:
 		if(args.portOffset != -1)
 			settings.setPortOffset(args.portOffset);
 
+		QStringList services = settings.value("runner/services").toStringList();
+
+		QStringList condure_in_stream_specs = settings.value("proxy/condure_in_stream_specs").toStringList();
+		trimlist(&condure_in_stream_specs);
+		QStringList condure_out_specs = settings.value("proxy/condure_out_specs").toStringList();
+		trimlist(&condure_out_specs);
 		QStringList m2a_in_stream_specs = settings.value("handler/m2a_in_stream_specs").toStringList();
 		trimlist(&m2a_in_stream_specs);
 		QStringList m2a_out_specs = settings.value("handler/m2a_out_specs").toStringList();
@@ -261,6 +270,8 @@ public:
 		bool push_in_sub_connect = settings.value("handler/push_in_sub_connect").toBool();
 		QString push_in_http_addr = settings.value("handler/push_in_http_addr").toString();
 		int push_in_http_port = settings.adjustedPort("handler/push_in_http_port");
+		int push_in_http_max_headers_size = settings.value("handler/push_in_max_headers_size", DEFAULT_HTTP_MAX_HEADERS_SIZE).toInt();
+		int push_in_http_max_body_size = settings.value("handler/push_in_max_body_size", DEFAULT_HTTP_MAX_BODY_SIZE).toInt();
 		bool ok;
 		int ipcFileMode = settings.value("handler/ipc_file_mode", -1).toString().toInt(&ok, 8);
 		bool shareAll = settings.value("handler/share_all").toBool();
@@ -292,8 +303,16 @@ public:
 		Engine::Configuration config;
 		config.appVersion = VERSION;
 		config.instanceId = "pushpin-handler_" + QByteArray::number(QCoreApplication::applicationPid());
-		config.serverInStreamSpecs = m2a_in_stream_specs;
-		config.serverOutSpecs = m2a_out_specs;
+		if(!services.contains("mongrel2") && (!condure_in_stream_specs.isEmpty() || !condure_out_specs.isEmpty()))
+		{
+			config.serverInStreamSpecs = condure_in_stream_specs;
+			config.serverOutSpecs = condure_out_specs;
+		}
+		else
+		{
+			config.serverInStreamSpecs = m2a_in_stream_specs;
+			config.serverOutSpecs = m2a_out_specs;
+		}
 		config.clientOutSpecs = intreq_out_specs;
 		config.clientOutStreamSpecs = intreq_out_stream_specs;
 		config.clientInSpecs = intreq_in_specs;
@@ -312,6 +331,8 @@ public:
 		config.pushInSubConnect = push_in_sub_connect;
 		config.pushInHttpAddr = QHostAddress(push_in_http_addr);
 		config.pushInHttpPort = push_in_http_port;
+		config.pushInHttpMaxHeadersSize = push_in_http_max_headers_size;
+		config.pushInHttpMaxBodySize = push_in_http_max_body_size;
 		config.ipcFileMode = ipcFileMode;
 		config.shareAll = shareAll;
 		config.messageRate = messageRate;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Fanout, Inc.
+ * Copyright (C) 2020 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -26,60 +26,61 @@
  * $FANOUT_END_LICENSE$
  */
 
-#ifndef SIMPLEHTTPSERVER_H
+#ifndef WSSESSION_H
+#define WSSESSION_H
 
 #include <QObject>
-#include <QHostAddress>
+#include <QHash>
+#include <QSet>
+#include "packet/httprequestdata.h"
 
-class HttpHeaders;
+class QTimer;
 
-class SimpleHttpServerPrivate;
-
-class SimpleHttpRequest : public QObject
+class WsSession : public QObject
 {
 	Q_OBJECT
 
 public:
-	SimpleHttpRequest(int maxHeadersSize, int maxBodySize, QObject* parent = 0);
-	~SimpleHttpRequest();
+	QString cid;
+	int nextReqId;
+	QString channelPrefix;
+	HttpRequestData requestData;
+	QString route;
+	QString sid;
+	QHash<QString, QString> meta;
+	QHash<QString, QStringList> channelFilters; // k=channel, v=list(filters)
+	QSet<QString> channels;
+	QSet<QString> implicitChannels;
+	int ttl;
+	QByteArray keepAliveType;
+	QByteArray keepAliveMessage;
+	QByteArray delayedType;
+	QByteArray delayedMessage;
+	QHash<int, qint64> pendingRequests;
+	QTimer *expireTimer;
+	QTimer *delayedTimer;
+	QTimer *requestTimer;
 
-	QString requestMethod() const;
-	QByteArray requestUri() const;
-	HttpHeaders requestHeaders() const;
-	QByteArray requestBody() const;
+	WsSession(QObject *parent = 0);
+	~WsSession();
 
-	void respond(int code, const QByteArray &reason, const HttpHeaders &headers, const QByteArray &body);
-	void respond(int code, const QByteArray &reason, const QString &body);
-
-signals:
-	void finished();
-
-private:
-	class Private;
-	friend class Private;
-	friend class SimpleHttpServerPrivate;
-	Private *d;
-
-	SimpleHttpRequest(QObject *parent = 0);
-};
-
-class SimpleHttpServer : public QObject
-{
-	Q_OBJECT
-
-public:
-	SimpleHttpServer(int maxHeadersSize, int maxBodySize, QObject *parent = 0);
-	~SimpleHttpServer();
-
-	bool listen(const QHostAddress &addr, int port);
-	SimpleHttpRequest *takeNext();
+	void refreshExpiration();
+	void flushDelayed();
+	void sendDelayed(const QByteArray &type, const QByteArray &message, int timeout);
+	void ack(int reqId);
 
 signals:
-	void requestReady();
+	void send(int reqId, const QByteArray &type, const QByteArray &message);
+	void expired();
+	void error();
 
 private:
-	friend class SimpleHttpServerPrivate;
-	SimpleHttpServerPrivate *d;
+	void setupRequestTimer();
+
+private slots:
+	void expireTimer_timeout();
+	void delayedTimer_timeout();
+	void requestTimer_timeout();
 };
 
 #endif
