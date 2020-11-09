@@ -20,6 +20,20 @@ set -e
 
 case "$1" in
     configure)
+	if [ -e /etc/pushpin/pushpin.conf ]; then
+		if grep -q '^services=.*condure' /etc/pushpin/pushpin.conf; then
+			ucf --three-way /usr/share/pushpin/pushpin.conf.condure /etc/pushpin/pushpin.conf
+		else
+			ucf --three-way /usr/share/pushpin/pushpin.conf.mongrel2 /etc/pushpin/pushpin.conf
+		fi
+	else
+		if which condure > /dev/null; then
+			ucf --three-way /usr/share/pushpin/pushpin.conf.condure /etc/pushpin/pushpin.conf
+		else
+			ucf --three-way /usr/share/pushpin/pushpin.conf.mongrel2 /etc/pushpin/pushpin.conf
+		fi
+	fi
+	ucfr pushpin /etc/pushpin/pushpin.conf
     ;;
 
     abort-upgrade|abort-remove|abort-deconfigure)

@@ -10,7 +10,7 @@ Vcs-Browser: https://salsa.debian.org/jan/pushpin
 
 Package: pushpin
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, mongrel2-core (>= 1.9.0), zurl (>= 1.3.0-2), adduser, lsb-base (>= 3.0-6)
+Depends: ${shlibs:Depends}, ${misc:Depends}, condure | mongrel2-core (>= 1.9.0), zurl (>= 1.3.0-2), adduser, lsb-base (>= 3.0-6), ucf
 Description: HTTP reverse proxy server for streaming and long-polling services
  Pushpin is a reverse proxy server that makes it easy to implement
  WebSocket, HTTP streaming, and HTTP long-polling services. It communicates

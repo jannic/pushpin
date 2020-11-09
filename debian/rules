@@ -25,6 +25,10 @@ override_dh_auto_configure:
 override_dh_auto_install:
 	dh_auto_install -- INSTALL_ROOT="$(CURDIR)/debian/pushpin"
 	mkdir -p debian/pushpin/var/log/pushpin
+	mkdir -p debian/pushpin/usr/share/pushpin
+	mv debian/pushpin/etc/pushpin/pushpin.conf debian/pushpin/usr/share/pushpin/pushpin.conf.condure
+	cp debian/pushpin.conf.md5sum debian/pushpin/usr/share/pushpin/pushpin.conf.mongrel2.md5sum
+	sed 's/services=condure/services=mongrel2,m2adapter/' <debian/pushpin/usr/share/pushpin/pushpin.conf.condure >debian/pushpin/usr/share/pushpin/pushpin.conf.mongrel2
 
 override_dh_installexamples:
 	dh_installexamples -X.o -XMakefile
