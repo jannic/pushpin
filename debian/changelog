@@ -1,3 +1,9 @@
+pushpin (1.31.0-2) UNRELEASED; urgency=medium
+
+  * Updated watch file (point to github instead of bintray)
+
+ -- Jan Niehusmann <jan@debian.org>  Wed, 28 Apr 2021 14:52:31 +0200
+
 pushpin (1.31.0-1) unstable; urgency=medium
 
   * New upstream version
