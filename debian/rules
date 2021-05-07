@@ -7,6 +7,8 @@
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 export DEB_LDFLAGS_MAINT_APPEND = -Wl,--as-needed
 
+export CARGO_HOME=$(CURDIR)/debian/cargo_home
+
 define QMAKE_BUILDFLAGS
 QMAKE_CPPFLAGS *= $(shell dpkg-buildflags --get CPPFLAGS)
 QMAKE_CFLAGS   *= $(shell dpkg-buildflags --get CFLAGS) $(shell dpkg-buildflags --get CPPFLAGS)
@@ -15,12 +17,24 @@ QMAKE_LFLAGS   *= $(shell dpkg-buildflags --get LDFLAGS)
 endef
 export QMAKE_BUILDFLAGS
 
+# for cargo
+include /usr/share/dpkg/architecture.mk
+include /usr/share/dpkg/buildflags.mk
+include /usr/share/rustc/architecture.mk
+export CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
+export DEB_HOST_RUST_TYPE DEB_HOST_GNU_TYPE
+
 %:
-	dh $@ --parallel
+	dh $@
+
 
 override_dh_auto_configure:
+	#/usr/share/cargo/bin/cargo prepare-debian $(CARGO_HOME)/registry --link-from-system
 	./configure --prefix=/usr --qtselect=5 --configdir=/etc --extraconf="$$QMAKE_BUILDFLAGS" --verbose
 	echo "CONFIG += debug" >>conf.pri
+	rm Cargo.lock
+	rm .cargo/config.toml
+	cargo update
 
 override_dh_auto_install:
 	dh_auto_install -- INSTALL_ROOT="$(CURDIR)/debian/pushpin"
@@ -29,6 +43,7 @@ override_dh_auto_install:
 	mv debian/pushpin/etc/pushpin/pushpin.conf debian/pushpin/usr/share/pushpin/pushpin.conf.condure
 	cp debian/pushpin.conf.md5sum debian/pushpin/usr/share/pushpin/pushpin.conf.mongrel2.md5sum
 	sed 's/services=condure/services=mongrel2,m2adapter/' <debian/pushpin/usr/share/pushpin/pushpin.conf.condure >debian/pushpin/usr/share/pushpin/pushpin.conf.mongrel2
+	cp target/release/pushpin-publish debian/pushpin/usr/bin/
 
 override_dh_installexamples:
 	dh_installexamples -X.o -XMakefile
