@@ -1,0 +1,9 @@
+pushpin for Debian
+------------------
+
+Pushpin orig tarball is created using
+uscan --repack --compression xz
+
+That command downloads the latest version from
+https://github.com/fanout/pushpin/releases and removes vendored
+3rd party files.
