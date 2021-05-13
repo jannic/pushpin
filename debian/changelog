@@ -1,3 +1,13 @@
+pushpin (1.32.0-1) UNRELEASED; urgency=medium
+
+  * New upstream release, with some modifications:
+    - for now, disable use of rustls-native-certs
+      (This effectively breaks https in pushpin-publish unusable)
+    - downgrade dependency on rustls to 0.18
+  * Fix watch file
+
+ -- Jan Niehusmann <jan@debian.org>  Thu, 13 May 2021 15:48:57 +0200
+
 pushpin (1.31.0-2) unstable; urgency=medium
 
   * Updated watch file (point to github instead of bintray)
