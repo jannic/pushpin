@@ -34,7 +34,7 @@ use std::io;
 use std::io::{BufRead, Read, Write};
 use std::net;
 use std::str;
-use std::sync::Arc;
+//use std::sync::Arc;
 
 enum TnValue {
     Null,
@@ -236,21 +236,23 @@ fn parse_url(url: &str) -> Result<ParsedUrl, io::Error> {
     })
 }
 
+trait DummyStream: Read + Write {}
+
 struct TlsStream {
-    stream: rustls::StreamOwned<rustls::ClientSession, net::TcpStream>,
+    //stream: rustls::StreamOwned<rustls::ClientSession, net::TcpStream>,
+    stream: Box<dyn DummyStream>,
 }
 
 impl TlsStream {
+    /*
     fn new(stream: net::TcpStream, host: &str) -> Result<Self, Box<dyn Error>> {
         let mut config = rustls::ClientConfig::new();
 
-        /*
         config.root_store = match rustls_native_certs::load_native_certs() {
             Ok(store) => store,
             Err((Some(store), _)) => store,
             Err((_, e)) => return Err(e.into()),
         };
-        */
 
         let config = Arc::new(config);
 
@@ -261,6 +263,11 @@ impl TlsStream {
         Ok(Self {
             stream: rustls::StreamOwned::new(client, stream),
         })
+    }
+    */
+
+    fn new(_stream: net::TcpStream, _host: &str) -> Result<Self, Box<dyn Error>> {
+        Err("TLS is not yet supported in the debian version of pushpin-publish".into())
     }
 }
 
