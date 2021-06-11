@@ -1,3 +1,9 @@
+pushpin (1.32.2-1) unstable; urgency=medium
+
+  * New upstream version
+
+ -- Jan Niehusmann <jan@debian.org>  Fri, 11 Jun 2021 12:58:50 +0200
+
 pushpin (1.32.0-2) unstable; urgency=medium
 
   * Fix compilation on targets not supported by rustls
