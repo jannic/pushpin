@@ -1,6 +1,14 @@
 Pushpin Changelog
 =================
 
+v. 1.32.2 (2021-06-09)
+
+  * Fix publishing to SockJS WebSocket connections.
+
+v. 1.32.1 (2021-05-13)
+
+  * Build system fixes.
+
 v. 1.32.0 (2021-05-11)
 
   * pushpin-publish: support sending via HTTP, and do this by default.
