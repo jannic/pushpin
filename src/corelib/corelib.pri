@@ -1,5 +1,6 @@
 QZMQ_DIR = $$PWD/qzmq
 COMMON_DIR = $$PWD/common
+RUST_DIR = $$PWD/../rust
 
 INCLUDEPATH += $$QZMQ_DIR/src
 include($$QZMQ_DIR/src/src.pri)
@@ -8,6 +9,8 @@ INCLUDEPATH += $$COMMON_DIR
 DEFINES += NO_IRISNET
 HEADERS += $$COMMON_DIR/processquit.h
 SOURCES += $$COMMON_DIR/processquit.cpp
+
+INCLUDEPATH += $$RUST_DIR/include
 
 HEADERS += \
 	$$COMMON_DIR/tnetstring.h \
@@ -44,6 +47,8 @@ SOURCES += \
 	$$PWD/packet/zrpcresponsepacket.cpp
 
 HEADERS += \
+	$$PWD/timerwheel.h \
+	$$PWD/rtimer.h \
 	$$PWD/logutil.h \
 	$$PWD/uuidutil.h \
 	$$PWD/zutil.h \
@@ -61,6 +66,8 @@ HEADERS += \
 	$$PWD/settings.h
 
 SOURCES += \
+	$$PWD/timerwheel.cpp \
+	$$PWD/rtimer.cpp \
 	$$PWD/logutil.cpp \
 	$$PWD/uuidutil.cpp \
 	$$PWD/zutil.cpp \

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2017 Fanout, Inc.
+ * Copyright (C) 2012-2021 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -306,11 +306,13 @@ public:
 		trimlist(&origHeadersNeedMarkStr);
 		bool logFrom = settings.value("proxy/log_from").toBool();
 		bool logUserAgent = settings.value("proxy/log_user_agent").toBool();
+		QByteArray sigIss = settings.value("proxy/sig_iss", "pushpin").toString().toUtf8();
 		QByteArray sigKey = parse_key(settings.value("proxy/sig_key").toString());
 		QByteArray upstreamKey = parse_key(settings.value("proxy/upstream_key").toString());
 		QString sockJsUrl = settings.value("proxy/sockjs_url").toString();
 		QString updatesCheck = settings.value("proxy/updates_check","off").toString();
 		QString organizationName = settings.value("proxy/organization_name").toString();
+		int clientMaxconn = settings.value("runner/client_maxconn", 50000).toInt();
 		int statsConnectionTtl = settings.value("global/stats_connection_ttl", 120).toInt();
 
 		QList<QByteArray> origHeadersNeedMark;
@@ -383,13 +385,14 @@ public:
 		config.origHeadersNeedMark = origHeadersNeedMark;
 		config.logFrom = logFrom;
 		config.logUserAgent = logUserAgent;
-		config.sigIss = "pushpin";
+		config.sigIss = sigIss;
 		config.sigKey = sigKey;
 		config.upstreamKey = upstreamKey;
 		config.sockJsUrl = sockJsUrl;
 		config.updatesCheck = updatesCheck;
 		config.organizationName = organizationName;
 		config.quietCheck = args.quietCheck;
+		config.connectionsMax = clientMaxconn;
 		config.statsConnectionTtl = statsConnectionTtl;
 
 		engine = new Engine(this);

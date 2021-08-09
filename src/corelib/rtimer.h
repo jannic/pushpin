@@ -26,8 +26,41 @@
  * $FANOUT_END_LICENSE$
  */
 
-pub mod ffi;
-pub mod list;
-pub mod publish_cli;
-pub mod timer;
-pub mod tnetstring;
+#ifndef RTIMER_H
+#define RTIMER_H
+
+#include <qobject.h>
+
+class TimerManager;
+
+class RTimer : public QObject
+{
+	Q_OBJECT
+
+public:
+	RTimer(QObject *parent = 0);
+	~RTimer();
+
+	bool isActive() const;
+
+	void setSingleShot(bool singleShot);
+	void start(int msec);
+	void start();
+	void stop();
+
+	static void init(int capacity);
+
+signals:
+	void timeout();
+
+private:
+	friend class TimerManager;
+
+	bool singleShot_;
+	int interval_;
+	int timerId_;
+
+	void timerReady();
+};
+
+#endif
