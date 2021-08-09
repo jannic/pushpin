@@ -17,6 +17,14 @@ PRE_TARGETDEPS += $$PWD/../../corelib/libpushpin-core.a
 
 include($$PWD/../../../conf.pri)
 
+CONFIG(debug) {
+	LIBS += -L$$PWD/../../../target/debug -lpushpin -ldl
+	PRE_TARGETDEPS += $$PWD/../../../target/debug/libpushpin.a
+} else {
+	LIBS += -L$$PWD/../../../target/release -lpushpin -ldl
+	PRE_TARGETDEPS += $$PWD/../../../target/release/libpushpin.a
+}
+
 INCLUDEPATH += $$SRC_DIR
 INCLUDEPATH += $$CORE_DIR
 INCLUDEPATH += $$QZMQ_DIR/src

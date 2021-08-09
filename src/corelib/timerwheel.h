@@ -26,8 +26,38 @@
  * $FANOUT_END_LICENSE$
  */
 
-pub mod ffi;
-pub mod list;
-pub mod publish_cli;
-pub mod timer;
-pub mod tnetstring;
+#ifndef TIMERWHEEL_H
+#define TIMERWHEEL_H
+
+#include <QPair>
+
+class TimerWheel
+{
+public:
+	class Expired
+	{
+	public:
+		int key; // <0 if invalid
+		size_t userData;
+	};
+
+	TimerWheel(int capacity);
+	~TimerWheel();
+
+	// returns <0 if no capacity
+	int add(quint64 expires, size_t userData);
+
+	void remove(int key);
+
+	// returns <0 if no timers
+	qint64 timeout() const;
+
+	void update(quint64 curtime);
+
+	Expired takeExpired();
+
+private:
+	void *raw_;
+};
+
+#endif

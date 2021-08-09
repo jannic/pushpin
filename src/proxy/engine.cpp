@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2019 Fanout, Inc.
+ * Copyright (C) 2012-2021 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -35,6 +35,7 @@
 #include "packet/httpresponsedata.h"
 #include "packet/retryrequestpacket.h"
 #include "packet/statspacket.h"
+#include "rtimer.h"
 #include "log.h"
 #include "inspectdata.h"
 #include "zhttpmanager.h"
@@ -179,6 +180,9 @@ public:
 	{
 		config = _config;
 
+		// up to 10 timers per connection
+		RTimer::init(config.connectionsMax * 10);
+
 		logConfig.fromAddress = config.logFrom;
 		logConfig.userAgent = config.logUserAgent;
 
@@ -298,7 +302,7 @@ public:
 
 		if(!config.statsSpec.isEmpty())
 		{
-			stats = new StatsManager(this);
+			stats = new StatsManager(config.connectionsMax, 0, this);
 
 			stats->setInstanceId(config.clientId);
 			stats->setIpcFileMode(config.ipcFileMode);

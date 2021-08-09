@@ -26,8 +26,47 @@
  * $FANOUT_END_LICENSE$
  */
 
-pub mod ffi;
-pub mod list;
-pub mod publish_cli;
-pub mod timer;
-pub mod tnetstring;
+#include "timerwheel.h"
+
+#include "rust/timer.h"
+
+TimerWheel::TimerWheel(int capacity)
+{
+	raw_ = timer_wheel_create(capacity);
+}
+
+TimerWheel::~TimerWheel()
+{
+	timer_wheel_destroy(raw_);
+}
+
+int TimerWheel::add(quint64 expires, size_t userData)
+{
+	return timer_add(raw_, expires, userData);
+}
+
+void TimerWheel::remove(int key)
+{
+	timer_remove(raw_, key);
+}
+
+qint64 TimerWheel::timeout() const
+{
+	return timer_wheel_timeout(raw_);
+}
+
+void TimerWheel::update(quint64 curtime)
+{
+	timer_wheel_update(raw_, curtime);
+}
+
+TimerWheel::Expired TimerWheel::takeExpired()
+{
+	ExpiredTimer ret = timer_wheel_take_expired(raw_);
+
+	Expired expired;
+	expired.key = ret.key;
+	expired.userData = ret.user_data;
+
+	return expired;
+}
