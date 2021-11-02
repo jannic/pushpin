@@ -1,8 +1,10 @@
-pushpin (1.32.2-2) UNRELEASED; urgency=medium
+pushpin (1.32.2-2) unstable; urgency=medium
 
   * Relax dependency on base64 (Closes: Bug#997713)
+  * Backport fix for a test case failure.
+  * Fix debian/rules
 
- -- Jan Niehusmann <jan@debian.org>  Tue, 02 Nov 2021 07:47:03 +0100
+ -- Jan Niehusmann <jan@debian.org>  Tue, 02 Nov 2021 08:50:07 +0100
 
 pushpin (1.32.2-1) unstable; urgency=medium
 
