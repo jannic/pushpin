@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014-2021 Fanout, Inc.
+ * Copyright (C) 2014-2022 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -39,7 +39,9 @@
 #include "timerwheel.h"
 #include "log.h"
 #include "tnetstring.h"
+#include "httpheaders.h"
 #include "packet/statspacket.h"
+#include "simplehttpserver.h"
 #include "zutil.h"
 
 // make this somewhat big since PUB is lossy
@@ -145,6 +147,7 @@ public:
 		int httpResponseMessagesSent;
 		int blocksReceived;
 		int blocksSent;
+		int requestsReceived;
 		qint64 lastUpdate;
 		qint64 startTime;
 
@@ -157,6 +160,7 @@ public:
 			httpResponseMessagesSent(0),
 			blocksReceived(-1),
 			blocksSent(-1),
+			requestsReceived(0),
 			lastUpdate(-1),
 			startTime(-1)
 		{
@@ -170,7 +174,97 @@ public:
 				messagesSent == 0 &&
 				httpResponseMessagesSent == 0 &&
 				blocksReceived <= 0 &&
-				blocksSent <= 0);
+				blocksSent <= 0 &&
+				requestsReceived == 0);
+		}
+
+		void addConnectionsMinutes(int mins, qint64 now)
+		{
+			connectionsMinutes += mins;
+
+			lastUpdate = now;
+		}
+
+		void addMessageReceived(int blocks, qint64 now)
+		{
+			++messagesReceived;
+
+			if(blocks > 0)
+			{
+				if(blocksReceived < 0)
+					blocksReceived = 0;
+
+				blocksReceived += blocks;
+			}
+
+			lastUpdate = now;
+		}
+
+		void addMessageSent(const QString &transport, int blocks, qint64 now)
+		{
+			++messagesSent;
+
+			if(transport == "http-response")
+				++httpResponseMessagesSent;
+
+			if(blocks > 0)
+			{
+				if(blocksSent < 0)
+					blocksSent = 0;
+
+				blocksSent += blocks;
+			}
+
+			lastUpdate = now;
+		}
+
+		void addRequestsReceived(int count, qint64 now)
+		{
+			requestsReceived += count;
+
+			lastUpdate = now;
+		}
+	};
+
+	class Counts
+	{
+	public:
+		int requestsReceived;
+
+		Counts() :
+			requestsReceived(0)
+		{
+		}
+
+		bool isEmpty()
+		{
+			return (requestsReceived == 0);
+		}
+	};
+
+	class PrometheusMetric
+	{
+	public:
+		enum Type
+		{
+			RequestReceived,
+			ConnectionConnected,
+			ConnectionMinute,
+			MessageReceived,
+			MessageSent
+		};
+
+		Type mtype;
+		QString name;
+		QString type;
+		QString help;
+
+		PrometheusMetric(Type _mtype, const QString &_name, const QString &_type, const QString &_help) :
+			mtype(_mtype),
+			name(_name),
+			type(_type),
+			help(_help)
+		{
 		}
 	};
 
@@ -189,6 +283,9 @@ public:
 	int subscriptionLinger;
 	int reportInterval;
 	QZmq::Socket *sock;
+	SimpleHttpServer *prometheusServer;
+	QString prometheusPrefix;
+	QList<PrometheusMetric> prometheusMetrics;
 	QHash<QByteArray, int> routeActivity;
 	QHash<QByteArray, ConnectionInfo*> connectionInfoById;
 	QHash<QByteArray, QSet<ConnectionInfo*> > connectionInfoByRoute;
@@ -202,6 +299,8 @@ public:
 	TimerWheel wheel;
 	qint64 startTime;
 	QHash<QByteArray, Report*> reports;
+	Counts combinedCounts;
+	Report combinedReport;
 	QTimer *activityTimer;
 	QTimer *reportTimer;
 	QTimer *refreshTimer;
@@ -219,6 +318,7 @@ public:
 		subscriptionLinger(60 * 1000),
 		reportInterval(10 * 1000),
 		sock(0),
+		prometheusServer(0),
 		currentConnectionInfoRefreshBucket(0),
 		currentSubscriptionRefreshBucket(0),
 		wheel(TimerWheel((_connectionsMax * 2) + _subscriptionsMax)),
@@ -234,6 +334,12 @@ public:
 
 		setupConnectionBuckets();
 		setupSubscriptionBuckets();
+
+		prometheusMetrics += PrometheusMetric(PrometheusMetric::RequestReceived, "request_received", "counter", "Number of requests received");
+		prometheusMetrics += PrometheusMetric(PrometheusMetric::ConnectionConnected, "connection_connected", "gauge", "Number of concurrent connections");
+		prometheusMetrics += PrometheusMetric(PrometheusMetric::ConnectionMinute, "connection_minute", "counter", "Number of minutes clients have been connected");
+		prometheusMetrics += PrometheusMetric(PrometheusMetric::MessageReceived, "message_received", "counter", "Number of messages received by the publish API");
+		prometheusMetrics += PrometheusMetric(PrometheusMetric::MessageSent,"message_sent", "counter", "Number of messages sent to clients");
 
 		startTime = QDateTime::currentMSecsSinceEpoch();
 	}
@@ -294,6 +400,49 @@ public:
 			log_error("%s", qPrintable(errorMessage));
 			return false;
 		}
+
+		return true;
+	}
+
+	bool setPrometheusPort(const QString &portStr)
+	{
+		prometheusServer = new SimpleHttpServer(8192, 8192, this);
+		connect(prometheusServer, &SimpleHttpServer::requestReady, this, &Private::prometheus_requestReady);
+
+		if(portStr.startsWith("ipc://"))
+		{
+			if(!prometheusServer->listenLocal(portStr.mid(6)))
+			{
+				delete prometheusServer;
+
+				return false;
+			}
+		}
+		else
+		{
+			QHostAddress addr;
+			int port = -1;
+
+			int pos = portStr.indexOf(':');
+			if(pos >= 0)
+			{
+				addr = QHostAddress(portStr.mid(0, pos));
+				port = portStr.mid(pos + 1).toInt();
+			}
+			else
+			{
+				port = portStr.toInt();
+			}
+
+			if(!prometheusServer->listen(addr, port))
+			{
+				delete prometheusServer;
+
+				return false;
+			}
+		}
+
+		setupReportTimer();
 
 		return true;
 	}
@@ -532,6 +681,9 @@ public:
 
 	void removeReport(Report *report)
 	{
+		// subtract the current total from the combined report
+		combinedReport.connectionsMax -= report->connectionsMax;
+
 		reports.remove(report->routeId);
 	}
 
@@ -548,8 +700,10 @@ public:
 			prefix = "conn";
 		else if(packet.type == StatsPacket::Subscribed || packet.type == StatsPacket::Unsubscribed)
 			prefix = "sub";
-		else // Report
+		else if(packet.type == StatsPacket::Report)
 			prefix = "report";
+		else // Counts
+			prefix = "counts";
 
 		QVariant vpacket = packet.toVariant();
 
@@ -663,6 +817,18 @@ public:
 		write(p);
 	}
 
+	void sendCounts(const Counts &counts)
+	{
+		if(!sock)
+			return;
+
+		StatsPacket p;
+		p.type = StatsPacket::Counts;
+		p.from = instanceId;
+		p.requestsReceived = counts.requestsReceived;
+		write(p);
+	}
+
 	void updateConnectionsMax(const QByteArray &routeId, qint64 now)
 	{
 		Report *report = getOrCreateReport(routeId);
@@ -672,6 +838,10 @@ public:
 
 		int conns = localConns + extConns;
 
+		// subtract the current total from the combined report
+		combinedReport.connectionsMax -= report->connectionsMax;
+
+		// update the individual report
 		if(report->connectionsMaxStale)
 		{
 			report->connectionsMax = conns;
@@ -681,6 +851,10 @@ public:
 			report->connectionsMax = qMax(report->connectionsMax, conns);
 
 		report->lastUpdate = now;
+
+		// add the new total to the combined report
+		combinedReport.connectionsMax += report->connectionsMax;
+		combinedReport.lastUpdate = now;
 	}
 
 	void updateConnectionsMinutes(ConnectionInfo *c, qint64 now)
@@ -697,9 +871,8 @@ public:
 			// only advance as much as we've read
 			c->lastReport += mins * 60000;
 
-			report->connectionsMinutes += mins;
-
-			report->lastUpdate = now;
+			report->addConnectionsMinutes(mins, now);
+			combinedReport.addConnectionsMinutes(mins, now);
 		}
 	}
 
@@ -868,6 +1041,13 @@ private slots:
 		}
 
 		routeActivity.clear();
+
+		if(!combinedCounts.isEmpty())
+		{
+			sendCounts(combinedCounts);
+
+			combinedCounts = Counts();
+		}
 	}
 
 	void report_timeout()
@@ -952,6 +1132,42 @@ private slots:
 		refreshConnections(currentTime);
 		refreshSubscriptions(currentTime);
 	}
+
+	void prometheus_requestReady()
+	{
+		SimpleHttpRequest *req = prometheusServer->takeNext();
+
+		QString data;
+
+		foreach(const PrometheusMetric &m, prometheusMetrics)
+		{
+			QVariant value;
+
+			switch(m.mtype)
+			{
+				case PrometheusMetric::RequestReceived: value = QVariant(combinedReport.requestsReceived); break;
+				case PrometheusMetric::ConnectionConnected: value = QVariant(combinedReport.connectionsMax); break;
+				case PrometheusMetric::ConnectionMinute: value = QVariant(combinedReport.connectionsMinutes); break;
+				case PrometheusMetric::MessageReceived: value = QVariant(combinedReport.messagesReceived); break;
+				case PrometheusMetric::MessageSent: value = QVariant(combinedReport.messagesSent); break;
+			}
+
+			if(value.isNull())
+				continue;
+
+			data += QString(
+			"# HELP %1%2 %3\n"
+			"# TYPE %4%5 %6\n"
+			"%7%8 %9\n"
+			).arg(prometheusPrefix, m.name, m.help, prometheusPrefix, m.name, m.type, prometheusPrefix, m.name, value.toString());
+		}
+
+		connect(req, &SimpleHttpRequest::finished, req, &QObject::deleteLater);
+
+		HttpHeaders headers;
+		headers += HttpHeader("Content-Type", "text/plain");
+		req->respond(200, "OK", headers, data.toUtf8());
+	}
 };
 
 StatsManager::StatsManager(int connectionsMax, int subscriptionsMax, QObject *parent) :
@@ -1007,6 +1223,16 @@ void StatsManager::setReportInterval(int secs)
 void StatsManager::setOutputFormat(Format format)
 {
 	d->outputFormat = format;
+}
+
+bool StatsManager::setPrometheusPort(const QString &port)
+{
+	return d->setPrometheusPort(port);
+}
+
+void StatsManager::setPrometheusPrefix(const QString &prefix)
+{
+	d->prometheusPrefix = prefix;
 }
 
 void StatsManager::addActivity(const QByteArray &routeId, int count)
@@ -1093,7 +1319,10 @@ void StatsManager::addConnection(const QByteArray &id, const QByteArray &routeId
 		if(!replacing)
 		{
 			Private::Report *report = d->getOrCreateReport(c->routeId);
-			++(report->connectionsMinutes); // minutes are rounded up so count one immediately
+
+			// minutes are rounded up so count one immediately
+			report->addConnectionsMinutes(1, now);
+			d->combinedReport.addConnectionsMinutes(1, now);
 		}
 	}
 
@@ -1233,17 +1462,10 @@ void StatsManager::addMessageReceived(const QByteArray &routeId, int blocks)
 
 	Private::Report *report = d->getOrCreateReport(routeId);
 
-	++report->messagesReceived;
+	qint64 now = QDateTime::currentMSecsSinceEpoch();
 
-	if(blocks > 0)
-	{
-		if(report->blocksReceived < 0)
-			report->blocksReceived = 0;
-
-		report->blocksReceived += blocks;
-	}
-
-	report->lastUpdate = QDateTime::currentMSecsSinceEpoch();
+	report->addMessageReceived(blocks, now);
+	d->combinedReport.addMessageReceived(blocks, now);
 }
 
 void StatsManager::addMessageSent(const QByteArray &routeId, const QString &transport, int blocks)
@@ -1253,20 +1475,23 @@ void StatsManager::addMessageSent(const QByteArray &routeId, const QString &tran
 
 	Private::Report *report = d->getOrCreateReport(routeId);
 
-	++report->messagesSent;
+	qint64 now = QDateTime::currentMSecsSinceEpoch();
 
-	if(transport == "http-response")
-		++report->httpResponseMessagesSent;
+	report->addMessageSent(transport, blocks, now);
+	d->combinedReport.addMessageSent(transport, blocks, now);
+}
 
-	if(blocks > 0)
-	{
-		if(report->blocksSent < 0)
-			report->blocksSent = 0;
+void StatsManager::addRequestsReceived(int count)
+{
+	assert(count >= 0);
 
-		report->blocksSent += blocks;
-	}
+	qint64 now = QDateTime::currentMSecsSinceEpoch();
 
-	report->lastUpdate = QDateTime::currentMSecsSinceEpoch();
+	d->combinedCounts.requestsReceived += count;
+	d->combinedReport.addRequestsReceived(count, now);
+
+	if(!d->activityTimer->isActive())
+		d->activityTimer->start(ACTIVITY_TIMEOUT);
 }
 
 bool StatsManager::checkConnection(const QByteArray &id) const
@@ -1361,7 +1586,10 @@ bool StatsManager::processExternalPacket(const StatsPacket &packet)
 			if(!replacing)
 			{
 				Private::Report *report = d->getOrCreateReport(c->routeId);
-				++(report->connectionsMinutes); // minutes are rounded up so count one immediately
+
+				// minutes are rounded up so count one immediately
+				report->addConnectionsMinutes(1, now);
+				d->combinedReport.addConnectionsMinutes(1, now);
 			}
 		}
 		else

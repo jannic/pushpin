@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014-2017 Fanout, Inc.
+ * Copyright (C) 2014-2022 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -75,7 +75,8 @@ QVariant StatsPacket::toVariant() const
 			else // Http
 				obj["type"] = QByteArray("http");
 
-			obj["peer-address"] = peerAddress.toString().toUtf8();
+			if(!peerAddress.isNull())
+				obj["peer-address"] = peerAddress.toString().toUtf8();
 
 			if(ssl)
 				obj["ssl"] = true;
@@ -104,7 +105,7 @@ QVariant StatsPacket::toVariant() const
 			obj["unavailable"] = true;
 		}
 	}
-	else // Report
+	else if(type == Report)
 	{
 		if(connectionsMax != -1)
 			obj["connections"] = connectionsMax;
@@ -122,6 +123,11 @@ QVariant StatsPacket::toVariant() const
 			obj["blocks-sent"] = blocksSent;
 		if(duration >= 0)
 			obj["duration"] = duration;
+	}
+	else // Counts
+	{
+		if(requestsReceived > 0)
+			obj["requests-received"] = requestsReceived;
 	}
 
 	return obj;
@@ -360,6 +366,22 @@ bool StatsPacket::fromVariant(const QByteArray &_type, const QVariant &in)
 				return false;
 
 			duration = obj["duration"].toInt();
+		}
+	}
+	else if(_type == "counts")
+	{
+		type = Counts;
+
+		if(obj.contains("requests-received"))
+		{
+			if(!obj["requests-received"].canConvert(QVariant::Int))
+				return false;
+
+			int x = obj["requests-received"].toInt();
+			if(x < 0)
+				return false;
+
+			requestsReceived = x;
 		}
 	}
 	else

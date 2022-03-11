@@ -8,7 +8,7 @@ include($$OUT_PWD/../../conf.pri)
 bin_dir = $$PWD/../../bin
 root_dir = $$PWD/../..
 
-CONFIG(debug) {
+CONFIG(debug, debug|release) {
 	cargo_flags =
 	target_dir = $$PWD/../../target/debug
 } else {
@@ -38,7 +38,7 @@ unix:!isEmpty(BINDIR) {
 	binfiles.path = $$BINDIR
 	binfiles.files = \
 		$$bin_dir/pushpin-publish
-	binfiles.CONFIG += no_check_exist
+	binfiles.CONFIG += no_check_exist executable
 
 	INSTALLS += binfiles
 }

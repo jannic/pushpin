@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2021 Fanout, Inc.
+ * Copyright (C) 2012-2022 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -31,6 +31,7 @@
 
 #include <QObject>
 #include <QStringList>
+#include <QHostAddress>
 #include "xffrule.h"
 
 class Engine : public QObject
@@ -73,6 +74,7 @@ public:
 		XffRule xffUntrustedRule;
 		XffRule xffTrustedRule;
 		QList<QByteArray> origHeadersNeedMark;
+		bool acceptPushpinRoute;
 		bool logFrom;
 		bool logUserAgent;
 		QByteArray sigIss;
@@ -84,6 +86,8 @@ public:
 		bool quietCheck;
 		int connectionsMax;
 		int statsConnectionTtl;
+		QString prometheusPort;
+		QString prometheusPrefix;
 
 		Configuration() :
 			ipcFileMode(-1),
@@ -95,6 +99,7 @@ public:
 			acceptXForwardedProto(false),
 			setXForwardedProto(false),
 			setXForwardedProtocol(false),
+			acceptPushpinRoute(false),
 			logFrom(false),
 			logUserAgent(false),
 			updatesCheck("check"),

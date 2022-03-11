@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2020 Fanout, Inc.
+ * Copyright (C) 2015-2022 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -29,8 +29,12 @@
 #include "simplehttpserver.h"
 
 #include <assert.h>
+#include <QFile>
+#include <QFileInfo>
 #include <QTcpSocket>
 #include <QTcpServer>
+#include <QLocalSocket>
+#include <QLocalServer>
 #include "log.h"
 #include "httpheaders.h"
 
@@ -49,7 +53,7 @@ public:
 	};
 
 	SimpleHttpRequest *q;
-	QTcpSocket *sock;
+	QIODevice *sock;
 	State state;
 	QByteArray inBuf;
 	bool version1dot0;
@@ -93,11 +97,25 @@ public:
 
 	void start(QTcpSocket *_sock)
 	{
+		connect(_sock, &QTcpSocket::readyRead, this, &Private::sock_readyRead);
+		connect(_sock, &QTcpSocket::bytesWritten, this, &Private::sock_bytesWritten);
+		connect(_sock, &QTcpSocket::disconnected, this, &Private::sock_disconnected);
+
 		sock = _sock;
 		sock->setParent(this);
-		connect(sock, &QTcpSocket::readyRead, this, &Private::sock_readyRead);
-		connect(sock, &QTcpSocket::bytesWritten, this, &Private::sock_bytesWritten);
-		connect(sock, &QTcpSocket::disconnected, this, &Private::sock_disconnected);
+
+		processIn();
+	}
+
+	void start(QLocalSocket *_sock)
+	{
+		connect(_sock, &QLocalSocket::readyRead, this, &Private::sock_readyRead);
+		connect(_sock, &QLocalSocket::bytesWritten, this, &Private::sock_bytesWritten);
+		connect(_sock, &QLocalSocket::disconnected, this, &Private::sock_disconnected);
+
+		sock = _sock;
+		sock->setParent(this);
+
 		processIn();
 	}
 
@@ -408,7 +426,8 @@ class SimpleHttpServerPrivate : public QObject
 
 public:
 	SimpleHttpServer *q;
-	QTcpServer *server;
+	void *server;
+	bool local;
 	QSet<SimpleHttpRequest*> accepting;
 	QList<SimpleHttpRequest*> pending;
 	int maxHeadersSize;
@@ -418,6 +437,7 @@ public:
 		QObject(_q),
 		q(_q),
 		server(0),
+		local(false),
 		maxHeadersSize(maxHeadersSize),
 		maxBodySize(maxBodySize)
 	{
@@ -431,13 +451,43 @@ public:
 
 	bool listen(const QHostAddress &addr, int port)
 	{
-		server = new QTcpServer(this);
-		connect(server, &QTcpServer::newConnection, this, &SimpleHttpServerPrivate::server_newConnection);
-		if(!server->listen(addr, port))
+		assert(!server);
+
+		QTcpServer *s = new QTcpServer(this);
+		connect(s, &QTcpServer::newConnection, this, &SimpleHttpServerPrivate::server_newConnection);
+		if(!s->listen(addr, port))
 		{
-			delete server;
-			server = 0;
+			delete s;
+
+			return false;
 		}
+
+		server = s;
+		local = false;
+
+		return true;
+	}
+
+	bool listenLocal(const QString &name)
+	{
+		assert(!server);
+
+		QFileInfo fi(name);
+		QString filePath = fi.absoluteFilePath();
+
+		QFile::remove(filePath);
+
+		QLocalServer *s = new QLocalServer(this);
+		connect(s, &QLocalServer::newConnection, this, &SimpleHttpServerPrivate::server_newConnection);
+		if(!s->listen(filePath))
+		{
+			delete s;
+
+			return false;
+		}
+
+		server = s;
+		local = true;
 
 		return true;
 	}
@@ -445,12 +495,24 @@ public:
 private slots:
 	void server_newConnection()
 	{
-		QTcpSocket *sock = server->nextPendingConnection();
-		SimpleHttpRequest *req = new SimpleHttpRequest(maxHeadersSize, maxBodySize);
-		connect(req->d, &SimpleHttpRequest::Private::ready, this, &SimpleHttpServerPrivate::req_ready);
-		connect(req, &SimpleHttpRequest::finished, this, &SimpleHttpServerPrivate::req_finished);
-		accepting += req;
-		req->d->start(sock);
+		if(local)
+		{
+			QLocalSocket *sock = ((QLocalServer *)server)->nextPendingConnection();
+			SimpleHttpRequest *req = new SimpleHttpRequest(maxHeadersSize, maxBodySize);
+			connect(req->d, &SimpleHttpRequest::Private::ready, this, &SimpleHttpServerPrivate::req_ready);
+			connect(req, &SimpleHttpRequest::finished, this, &SimpleHttpServerPrivate::req_finished);
+			accepting += req;
+			req->d->start(sock);
+		}
+		else
+		{
+			QTcpSocket *sock = ((QTcpServer *)server)->nextPendingConnection();
+			SimpleHttpRequest *req = new SimpleHttpRequest(maxHeadersSize, maxBodySize);
+			connect(req->d, &SimpleHttpRequest::Private::ready, this, &SimpleHttpServerPrivate::req_ready);
+			connect(req, &SimpleHttpRequest::finished, this, &SimpleHttpServerPrivate::req_finished);
+			accepting += req;
+			req->d->start(sock);
+		}
 	}
 
 	void req_ready()
@@ -485,6 +547,11 @@ SimpleHttpServer::~SimpleHttpServer()
 bool SimpleHttpServer::listen(const QHostAddress &addr, int port)
 {
 	return d->listen(addr, port);
+}
+
+bool SimpleHttpServer::listenLocal(const QString &name)
+{
+	return d->listenLocal(name);
 }
 
 SimpleHttpRequest *SimpleHttpServer::takeNext()

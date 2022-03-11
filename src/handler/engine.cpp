@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2021 Fanout, Inc.
+ * Copyright (C) 2015-2022 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -92,7 +92,7 @@
 
 using namespace VariantUtil;
 
-static QList<PublishItem> parseHttpItems(const QVariantList &vitems, bool *ok = 0, QString *errorMessage = 0)
+static QList<PublishItem> parseItems(const QVariantList &vitems, bool *ok = 0, QString *errorMessage = 0)
 {
 	QList<PublishItem> out;
 
@@ -421,6 +421,7 @@ public:
 	RateLimiter *updateLimiter;
 	HttpSessionUpdateManager *httpSessionUpdateManager;
 	QString route;
+	QString statsRoute;
 	QString channelPrefix;
 	QStringList implicitChannels;
 	QByteArray sigIss;
@@ -471,6 +472,20 @@ public:
 				}
 
 				route = QString::fromUtf8(args["route"].toByteArray());
+			}
+
+			if(args.contains("separate-stats"))
+			{
+				if(args["separate-stats"].type() != QVariant::Bool)
+				{
+					respondError("bad-request");
+					return;
+				}
+
+				bool separateStats = args["separate-stats"].toBool();
+
+				if(!route.isEmpty() && separateStats)
+					statsRoute = route;
 			}
 
 			if(args.contains("channel-prefix"))
@@ -1257,6 +1272,7 @@ public:
 		updateLimiter->setRate(10);
 		updateLimiter->setBatchWaitEnabled(true);
 
+		sequencer->setWaitMax(config.messageWait);
 		sequencer->setIdCacheTtl(config.idCacheTtl);
 
 		zhttpIn = new ZhttpManager(this);
@@ -1459,6 +1475,17 @@ public:
 			}
 
 			log_info("stats: %s", qPrintable(config.statsSpec));
+		}
+
+		if(!config.prometheusPort.isEmpty())
+		{
+			stats->setPrometheusPrefix(config.prometheusPrefix);
+
+			if(!stats->setPrometheusPort(config.prometheusPort))
+			{
+				log_error("unable to bind to prometheus port: %s", qPrintable(config.prometheusPort));
+				return false;
+			}
 		}
 
 		if(!config.proxyStatsSpec.isEmpty())
@@ -1947,17 +1974,17 @@ private slots:
 
 			foreach(HttpSession *hs, responseSessions)
 			{
-				QString route = hs->route();
+				QString statsRoute = hs->statsRoute();
 
-				if(!publishLimiter->addAction(route, new PublishAction(this, hs, i, exposeHeaders), blocks != -1 ? blocks : 1))
+				if(!publishLimiter->addAction(statsRoute, new PublishAction(this, hs, i, exposeHeaders), blocks != -1 ? blocks : 1))
 				{
-					if(!route.isEmpty())
-						log_warning("exceeded publish hwm (%d) for route %s, dropping message", config.messageHwm, qPrintable(route));
+					if(!statsRoute.isEmpty())
+						log_warning("exceeded publish hwm (%d) for route %s, dropping message", config.messageHwm, qPrintable(statsRoute));
 					else
 						log_warning("exceeded publish hwm (%d), dropping message", config.messageHwm);
 				}
 
-				stats->addMessageSent(route.toUtf8(), "http-response", blocks);
+				stats->addMessageSent(statsRoute.toUtf8(), "http-response", blocks);
 			}
 
 			stats->addMessage(i.channel, i.id, "http-response", responseSessions.count(), blocks != -1 ? blocks * responseSessions.count() : -1);
@@ -1981,17 +2008,17 @@ private slots:
 
 			foreach(HttpSession *hs, streamSessions)
 			{
-				QString route = hs->route();
+				QString statsRoute = hs->statsRoute();
 
-				if(!publishLimiter->addAction(route, new PublishAction(this, hs, i), blocks != -1 ? blocks : 1))
+				if(!publishLimiter->addAction(statsRoute, new PublishAction(this, hs, i), blocks != -1 ? blocks : 1))
 				{
-					if(!route.isEmpty())
-						log_warning("exceeded publish hwm (%d) for route %s, dropping message", config.messageHwm, qPrintable(route));
+					if(!statsRoute.isEmpty())
+						log_warning("exceeded publish hwm (%d) for route %s, dropping message", config.messageHwm, qPrintable(statsRoute));
 					else
 						log_warning("exceeded publish hwm (%d), dropping message", config.messageHwm);
 				}
 
-				stats->addMessageSent(route.toUtf8(), "http-stream", blocks);
+				stats->addMessageSent(statsRoute.toUtf8(), "http-stream", blocks);
 			}
 
 			stats->addMessage(i.channel, i.id, "http-stream", streamSessions.count(), blocks != -1 ? blocks * streamSessions.count() : -1);
@@ -2015,17 +2042,17 @@ private slots:
 
 			foreach(WsSession *s, wsSessions)
 			{
-				QString route = s->route;
+				QString statsRoute = s->statsRoute;
 
-				if(!publishLimiter->addAction(route, new PublishAction(this, s, i), blocks != -1 ? blocks : 1))
+				if(!publishLimiter->addAction(statsRoute, new PublishAction(this, s, i), blocks != -1 ? blocks : 1))
 				{
-					if(!route.isEmpty())
-						log_warning("exceeded publish hwm (%d) for route %s, dropping message", config.messageHwm, qPrintable(route));
+					if(!statsRoute.isEmpty())
+						log_warning("exceeded publish hwm (%d) for route %s, dropping message", config.messageHwm, qPrintable(statsRoute));
 					else
 						log_warning("exceeded publish hwm (%d), dropping message", config.messageHwm);
 				}
 
-				stats->addMessageSent(route.toUtf8(), "ws-message", blocks);
+				stats->addMessageSent(statsRoute.toUtf8(), "ws-message", blocks);
 			}
 
 			stats->addMessage(i.channel, i.id, "ws-message", wsSessions.count(), blocks != -1 ? blocks * wsSessions.count() : -1);
@@ -2120,6 +2147,42 @@ private slots:
 			RefreshWorker *w = new RefreshWorker(req, proxyControlClient, &cs.wsSessionsByChannel, this);
 			connect(w, &RefreshWorker::finished, this, &Private::deferred_finished);
 			deferreds += w;
+		}
+		else if(req->method() == "publish")
+		{
+			QVariantHash args = req->args();
+
+			if(!args.contains("items"))
+			{
+				req->respondError("bad-request", "Invalid format: object does not contain 'items'");
+				delete req;
+				return;
+			}
+
+			if(args["items"].type() != QVariant::List)
+			{
+				req->respondError("bad-request", "Invalid format: object contains 'items' with wrong type");
+				delete req;
+				return;
+			}
+
+			QVariantList vitems = args["items"].toList();
+
+			bool ok;
+			QString errorMessage;
+			QList<PublishItem> items = parseItems(vitems, &ok, &errorMessage);
+			if(!ok)
+			{
+				req->respondError("bad-request", QString("Invalid format: %1").arg(errorMessage));
+				delete req;
+				return;
+			}
+
+			req->respond();
+			delete req;
+
+			foreach(const PublishItem &item, items)
+				handlePublishItem(item);
 		}
 		else
 		{
@@ -2299,6 +2362,7 @@ private slots:
 				}
 
 				s->route = item.route;
+				s->statsRoute = item.separateStats ? item.route : QString();
 				s->channelPrefix = QString::fromUtf8(item.channelPrefix);
 				continue;
 			}
@@ -2480,7 +2544,7 @@ private slots:
 
 					outItems += i;
 
-					stats->addActivity(s->route.toUtf8(), 1);
+					stats->addActivity(s->statsRoute.toUtf8(), 1);
 				}
 			}
 			else if(item.type == WsControlPacket::Item::Subscribe)
@@ -2569,6 +2633,14 @@ private slots:
 			{
 				// merge with our own stats
 				stats->addActivity(p.route, p.count);
+			}
+		}
+		else if(p.type == StatsPacket::Counts)
+		{
+			if(p.requestsReceived > 0)
+			{
+				// merge with our own stats
+				stats->addRequestsReceived(p.requestsReceived);
 			}
 		}
 		else if(p.type == StatsPacket::Connected || p.type == StatsPacket::Disconnected)
@@ -2687,7 +2759,7 @@ private slots:
 
 				bool ok;
 				QString errorMessage;
-				QList<PublishItem> items = parseHttpItems(vitems, &ok, &errorMessage);
+				QList<PublishItem> items = parseItems(vitems, &ok, &errorMessage);
 				if(!ok)
 				{
 					httpControlRespond(req, 400, "Bad Request", QString("Invalid format: %1\n").arg(errorMessage));

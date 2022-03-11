@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2021 Fanout, Inc.
+ * Copyright (C) 2015-2022 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -70,6 +70,7 @@ public:
 		int messageRate;
 		int messageHwm;
 		int messageBlockSize;
+		int messageWait;
 		int idCacheTtl;
 		int connectionsMax;
 		int connectionSubscriptionMax;
@@ -78,6 +79,8 @@ public:
 		int statsSubscriptionTtl;
 		int statsReportInterval;
 		QString statsFormat;
+		QString prometheusPort;
+		QString prometheusPrefix;
 
 		Configuration() :
 			pushInSubConnect(false),
@@ -89,6 +92,7 @@ public:
 			messageRate(-1),
 			messageHwm(-1),
 			messageBlockSize(-1),
+			messageWait(-1),
 			idCacheTtl(-1),
 			connectionsMax(-1),
 			connectionSubscriptionMax(-1),

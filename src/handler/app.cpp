@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2021 Fanout, Inc.
+ * Copyright (C) 2015-2022 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -278,6 +278,7 @@ public:
 		int messageRate = settings.value("handler/message_rate", -1).toInt();
 		int messageHwm = settings.value("handler/message_hwm", -1).toInt();
 		int messageBlockSize = settings.value("handler/message_block_size", -1).toInt();
+		int messageWait = settings.value("handler/message_wait", 5000).toInt();
 		int idCacheTtl = settings.value("handler/id_cache_ttl", 0).toInt();
 		int clientMaxconn = settings.value("runner/client_maxconn", 50000).toInt();
 		int connectionSubscriptionMax = settings.value("handler/connection_subscription_max", 20).toInt();
@@ -286,6 +287,8 @@ public:
 		int statsSubscriptionTtl = settings.value("handler/stats_subscription_ttl", 60).toInt();
 		int statsReportInterval = settings.value("handler/stats_report_interval", 10).toInt();
 		QString statsFormat = settings.value("handler/stats_format").toString();
+		QString prometheusPort = settings.value("handler/prometheus_port").toString();
+		QString prometheusPrefix = settings.value("handler/prometheus_prefix").toString();
 
 		if(m2a_in_stream_specs.isEmpty() || m2a_out_specs.isEmpty())
 		{
@@ -339,6 +342,7 @@ public:
 		config.messageRate = messageRate;
 		config.messageHwm = messageHwm;
 		config.messageBlockSize = messageBlockSize;
+		config.messageWait = messageWait;
 		config.idCacheTtl = idCacheTtl;
 		config.connectionsMax = clientMaxconn;
 		config.connectionSubscriptionMax = connectionSubscriptionMax;
@@ -347,6 +351,8 @@ public:
 		config.statsSubscriptionTtl = statsSubscriptionTtl;
 		config.statsReportInterval = statsReportInterval;
 		config.statsFormat = statsFormat;
+		config.prometheusPort = prometheusPort;
+		config.prometheusPrefix = prometheusPrefix;
 
 		engine = new Engine(this);
 		if(!engine->start(config))
