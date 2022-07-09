@@ -9,11 +9,13 @@ export DEB_LDFLAGS_MAINT_APPEND = -Wl,--as-needed
 
 export CARGO_HOME=$(CURDIR)/debian/cargo_home
 
+ALLOW_MULTIPLE=-Wl,--allow-multiple-definition
+
 define QMAKE_BUILDFLAGS
 QMAKE_CPPFLAGS *= $(shell dpkg-buildflags --get CPPFLAGS)
 QMAKE_CFLAGS   *= $(shell dpkg-buildflags --get CFLAGS) $(shell dpkg-buildflags --get CPPFLAGS)
 QMAKE_CXXFLAGS *= $(shell dpkg-buildflags --get CXXFLAGS) $(shell dpkg-buildflags --get CPPFLAGS)
-QMAKE_LFLAGS   *= $(shell dpkg-buildflags --get LDFLAGS)
+QMAKE_LFLAGS   *= $(shell dpkg-buildflags --get LDFLAGS) $(if $(findstring arm,$(shell uname -m)),$(ALLOW_MULTIPLE))
 endef
 export QMAKE_BUILDFLAGS
 
