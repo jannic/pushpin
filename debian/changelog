@@ -1,8 +1,8 @@
-pushpin (1.35.0-2) UNRELEASED; urgency=medium
+pushpin (1.35.0-2) unstable; urgency=medium
 
   * Work around duplicate symbol errors on armel
 
- -- Jan Niehusmann <jan@debian.org>  Sat, 09 Jul 2022 18:33:47 +0200
+ -- Jan Niehusmann <jan@debian.org>  Sat, 09 Jul 2022 21:16:26 +0200
 
 pushpin (1.35.0-1) unstable; urgency=medium
 
