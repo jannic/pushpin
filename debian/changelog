@@ -1,3 +1,9 @@
+pushpin (1.36.0-1) UNRELEASED; urgency=medium
+
+  * New upstream version
+
+ -- Jan Niehusmann <jan@debian.org>  Tue, 15 Nov 2022 20:02:01 +0100
+
 pushpin (1.35.0-2) unstable; urgency=medium
 
   * Work around duplicate symbol errors on armel
