@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2017 Fanout, Inc.
+ * Copyright (C) 2012-2022 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -33,10 +33,15 @@
 #include "logutil.h"
 #include "domainmap.h"
 
+namespace Jwt {
+	class EncodingKey;
+}
+
 class InspectData;
 class AcceptData;
 class ZrpcManager;
 class ZRoutes;
+class StatsManager;
 class XffRule;
 class RequestSession;
 
@@ -45,15 +50,16 @@ class ProxySession : public QObject
 	Q_OBJECT
 
 public:
-	ProxySession(ZRoutes *zroutes, ZrpcManager *acceptManager, const LogUtil::Config &logConfig, QObject *parent = 0);
+	ProxySession(ZRoutes *zroutes, ZrpcManager *acceptManager, const LogUtil::Config &logConfig, StatsManager *stats = 0, QObject *parent = 0);
 	~ProxySession();
 
 	void setRoute(const DomainMap::Entry &route);
-	void setDefaultSigKey(const QByteArray &iss, const QByteArray &key);
+	void setDefaultSigKey(const QByteArray &iss, const Jwt::EncodingKey &key);
 	void setAcceptXForwardedProtocol(bool enabled);
 	void setUseXForwardedProtocol(bool protoEnabled, bool protocolEnabled);
 	void setXffRules(const XffRule &untrusted, const XffRule &trusted);
 	void setOrigHeadersNeedMark(const QList<QByteArray> &names);
+	void setAcceptPushpinRoute(bool enabled);
 	void setProxyInitialResponseEnabled(bool enabled);
 
 	void setInspectData(const InspectData &idata);

@@ -35,8 +35,10 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QHostAddress>
+#include <QRandomGenerator>
 #include "packet/httprequestdata.h"
 #include "log.h"
+#include "jwt.h"
 #include "zhttpmanager.h"
 #include "zwebsocket.h"
 #include "websocketoverhttp.h"
@@ -247,8 +249,8 @@ public:
 	DomainMap::Entry route;
 	bool debug;
 	QByteArray defaultSigIss;
-	QByteArray defaultSigKey;
-	QByteArray defaultUpstreamKey;
+	Jwt::EncodingKey defaultSigKey;
+	Jwt::DecodingKey defaultUpstreamKey;
 	bool passToUpstream;
 	bool acceptXForwardedProtocol;
 	bool useXForwardedProto;
@@ -256,11 +258,12 @@ public:
 	XffRule xffRule;
 	XffRule xffTrustedRule;
 	QList<QByteArray> origHeadersNeedMark;
+	bool acceptPushpinRoute;
 	HttpRequestData requestData;
 	bool trustedClient;
 	QHostAddress logicalClientAddress;
 	QByteArray sigIss;
-	QByteArray sigKey;
+	Jwt::EncodingKey sigKey;
 	WebSocket *inSock;
 	WebSocket *outSock;
 	int inPendingBytes;
@@ -298,6 +301,7 @@ public:
 		acceptXForwardedProtocol(false),
 		useXForwardedProto(false),
 		useXForwardedProtocol(false),
+		acceptPushpinRoute(false),
 		trustedClient(false),
 		inSock(0),
 		outSock(0),
@@ -395,6 +399,8 @@ public:
 			return;
 		}
 
+		incCounter(Stats::ClientHeaderBytesReceived, ZhttpManager::estimateRequestHeaderBytes("GET", requestData.uri, requestData.headers));
+
 		if(!route.asHost.isEmpty())
 			ProxyUtil::applyHost(&requestData.uri, route.asHost);
 
@@ -408,7 +414,7 @@ public:
 
 		requestData.uri.setPath(QString::fromUtf8(path), QUrl::StrictMode);
 
-		if(!route.sigIss.isEmpty() && !route.sigKey.isEmpty())
+		if(!route.sigIss.isEmpty() && !route.sigKey.isNull())
 		{
 			sigIss = route.sigIss;
 			sigKey = route.sigKey;
@@ -434,7 +440,7 @@ public:
 
 		clientAddress = inSock->peerAddress();
 
-		ProxyUtil::manipulateRequestHeaders("wsproxysession", q, &requestData, trustedClient, route, sigIss, sigKey, acceptXForwardedProtocol, useXForwardedProto, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, clientAddress, InspectData(), route.grip, false);
+		ProxyUtil::manipulateRequestHeaders("wsproxysession", q, &requestData, trustedClient, route, sigIss, sigKey, acceptXForwardedProtocol, useXForwardedProto, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, acceptPushpinRoute, clientAddress, InspectData(), route.grip, false);
 
 		// don't proxy extensions, as we may not know how to handle them
 		requestData.headers.removeAll("Sec-WebSocket-Extensions");
@@ -457,6 +463,10 @@ public:
 		inPendingFrames += fromSendEvent;
 
 		inSock->writeFrame(frame);
+
+		incCounter(Stats::ClientContentBytesSent, frame.data.size());
+		if(!frame.more)
+			incCounter(Stats::ClientMessagesSent);
 	}
 
 	void tryNextTarget()
@@ -571,6 +581,8 @@ public:
 
 		ProxyUtil::applyHostHeader(&requestData.headers, uri);
 
+		incCounter(Stats::ServerHeaderBytesSent, ZhttpManager::estimateRequestHeaderBytes("GET", uri, requestData.headers));
+
 		outSock->start(uri, requestData.headers);
 	}
 
@@ -580,6 +592,8 @@ public:
 
 		state = Closing;
 		inSock->respondError(code, reason, headers, body);
+
+		incCounter(Stats::ClientHeaderBytesSent, ZhttpManager::estimateResponseHeaderBytes(code, reason, headers));
 
 		logConnection(proxied, code, body.size());
 	}
@@ -604,11 +618,19 @@ public:
 
 			tryLogActivity();
 
+			incCounter(Stats::ClientContentBytesReceived, f.data.size());
+			if(!f.more)
+				incCounter(Stats::ClientMessagesReceived);
+
 			if(detached)
 				continue;
 
 			outSock->writeFrame(f);
 			outPendingBytes += f.data.size();
+
+			incCounter(Stats::ServerContentBytesSent, f.data.size());
+			if(!f.more)
+				incCounter(Stats::ServerMessagesSent);
 		}
 	}
 
@@ -619,6 +641,10 @@ public:
 			WebSocket::Frame f = outSock->readFrame();
 
 			tryLogActivity();
+
+			incCounter(Stats::ServerContentBytesReceived, f.data.size());
+			if(!f.more)
+				incCounter(Stats::ServerMessagesReceived);
 
 			if(detached && outReadInProgress == -1)
 				continue;
@@ -753,7 +779,7 @@ public:
 		if(keepAliveTimeout >= 0)
 		{
 			int timeout = keepAliveTimeout * 1000;
-			timeout = qMax(timeout - (qrand() % KEEPALIVE_RAND_MAX), 0);
+			timeout = qMax(timeout - (int)(QRandomGenerator::global()->generate() % KEEPALIVE_RAND_MAX), 0);
 			keepAliveTimer->start(timeout);
 		}
 	}
@@ -763,6 +789,12 @@ public:
 		// if idle mode, restart the timer. else leave alone
 		if(keepAliveTimer && keepAliveMode == WsControl::Idle)
 			setupKeepAlive();
+	}
+
+	void incCounter(Stats::Counter c, int count = 1)
+	{
+		if(statsManager)
+			statsManager->incCounter(route.statsRoute(), c, count);
 	}
 
 private slots:
@@ -847,6 +879,8 @@ private slots:
 
 		HttpHeaders headers = outSock->responseHeaders();
 
+		incCounter(Stats::ServerHeaderBytesReceived, ZhttpManager::estimateResponseHeaderBytes(101, outSock->responseReason(), headers));
+
 		// don't proxy extensions, as we may not know how to handle them
 		QList<QByteArray> wsExtensions = headers.takeAll("Sec-WebSocket-Extensions");
 
@@ -893,6 +927,8 @@ private slots:
 		}
 
 		inSock->respondSuccess(outSock->responseReason(), headers);
+
+		incCounter(Stats::ClientHeaderBytesSent, ZhttpManager::estimateResponseHeaderBytes(101, outSock->responseReason(), headers));
 
 		logConnection(true, 101, 0);
 
@@ -988,7 +1024,7 @@ private slots:
 	{
 		WebSocketOverHttp *woh = (WebSocketOverHttp *)sender();
 
-		ProxyUtil::manipulateRequestHeaders("wsproxysession", q, &requestData, trustedClient, route, sigIss, sigKey, acceptXForwardedProtocol, useXForwardedProto, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, clientAddress, InspectData(), route.grip, false);
+		ProxyUtil::manipulateRequestHeaders("wsproxysession", q, &requestData, trustedClient, route, sigIss, sigKey, acceptXForwardedProtocol, useXForwardedProto, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, acceptPushpinRoute, clientAddress, InspectData(), route.grip, false);
 
 		woh->setHeaders(requestData.headers);
 	}
@@ -1143,13 +1179,13 @@ void WsProxySession::setDebugEnabled(bool enabled)
 	d->debug = enabled;
 }
 
-void WsProxySession::setDefaultSigKey(const QByteArray &iss, const QByteArray &key)
+void WsProxySession::setDefaultSigKey(const QByteArray &iss, const Jwt::EncodingKey &key)
 {
 	d->defaultSigIss = iss;
 	d->defaultSigKey = key;
 }
 
-void WsProxySession::setDefaultUpstreamKey(const QByteArray &key)
+void WsProxySession::setDefaultUpstreamKey(const Jwt::DecodingKey &key)
 {
 	d->defaultUpstreamKey = key;
 }
@@ -1174,6 +1210,11 @@ void WsProxySession::setXffRules(const XffRule &untrusted, const XffRule &truste
 void WsProxySession::setOrigHeadersNeedMark(const QList<QByteArray> &names)
 {
 	d->origHeadersNeedMark = names;
+}
+
+void WsProxySession::setAcceptPushpinRoute(bool enabled)
+{
+	d->acceptPushpinRoute = enabled;
 }
 
 void WsProxySession::start(WebSocket *sock, const QByteArray &publicCid, const DomainMap::Entry &route)

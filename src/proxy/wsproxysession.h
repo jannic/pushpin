@@ -33,6 +33,11 @@
 #include "logutil.h"
 #include "domainmap.h"
 
+namespace Jwt {
+	class EncodingKey;
+	class DecodingKey;
+}
+
 class WebSocket;
 class ZRoutes;
 class WsControlManager;
@@ -56,12 +61,13 @@ public:
 	WebSocket *outSocket() const;
 
 	void setDebugEnabled(bool enabled);
-	void setDefaultSigKey(const QByteArray &iss, const QByteArray &key);
-	void setDefaultUpstreamKey(const QByteArray &key);
+	void setDefaultSigKey(const QByteArray &iss, const Jwt::EncodingKey &key);
+	void setDefaultUpstreamKey(const Jwt::DecodingKey &key);
 	void setAcceptXForwardedProtocol(bool enabled);
 	void setUseXForwardedProtocol(bool protoEnabled, bool protocolEnabled);
 	void setXffRules(const XffRule &untrusted, const XffRule &trusted);
 	void setOrigHeadersNeedMark(const QList<QByteArray> &names);
+	void setAcceptPushpinRoute(bool enabled);
 
 	// takes ownership
 	void start(WebSocket *sock, const QByteArray &publicCid, const DomainMap::Entry &route);

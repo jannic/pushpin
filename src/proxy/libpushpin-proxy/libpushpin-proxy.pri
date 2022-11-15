@@ -2,6 +2,7 @@ SRC_DIR = $$PWD/..
 CORE_DIR = $$PWD/../../corelib
 QZMQ_DIR = $$CORE_DIR/qzmq
 COMMON_DIR = $$CORE_DIR/common
+RUST_DIR = $$SRC_DIR/../rust
 
 INCLUDEPATH += $$SRC_DIR
 INCLUDEPATH += $$CORE_DIR
@@ -11,8 +12,9 @@ INCLUDEPATH += $$QZMQ_DIR/src
 INCLUDEPATH += $$COMMON_DIR
 DEFINES += NO_IRISNET
 
+INCLUDEPATH += $$RUST_DIR/include
+
 HEADERS += \
-	$$SRC_DIR/jwt.h \
 	$$SRC_DIR/testhttprequest.h \
 	$$SRC_DIR/testwebsocket.h \
 	$$SRC_DIR/websocketoverhttp.h \
@@ -37,7 +39,6 @@ HEADERS += \
 	$$SRC_DIR/engine.h
 
 SOURCES += \
-	$$SRC_DIR/jwt.cpp \
 	$$SRC_DIR/testhttprequest.cpp \
 	$$SRC_DIR/testwebsocket.cpp \
 	$$SRC_DIR/websocketoverhttp.cpp \

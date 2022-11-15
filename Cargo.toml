@@ -1,6 +1,6 @@
 [package]
 name = "pushpin"
-version = "1.35.0-dev"
+version = "1.36.0-dev"
 authors = ["Justin Karneges <justin@karneges.com>"]
 edition = "2018"
 
@@ -13,6 +13,7 @@ panic = "abort"
 [dependencies]
 base64 = "0.12"
 clap = { version = "2.33", features = ["wrap_help"] }
+jsonwebtoken = "8"
 libc = "0.2"
 log = "0.4"
 rustls = "0.19"
