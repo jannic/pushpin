@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2013 Fanout, Inc.
+ * Copyright (C) 2022 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -26,16 +26,14 @@
  * $FANOUT_END_LICENSE$
  */
 
-#ifndef JWT_H
-#define JWT_H
+#include "stats.h"
 
-#include <QVariant>
+namespace Stats {
 
-namespace Jwt {
-
-QByteArray encode(const QVariant &claim, const QByteArray &key);
-QVariant decode(const QByteArray &token, const QByteArray &key);
-
+void Counters::add(const Counters &other)
+{
+    for(int n = 0; n < STATS_COUNTERS_MAX; ++n)
+        inc((Counter)n, other._values[n]);
 }
 
-#endif
+}

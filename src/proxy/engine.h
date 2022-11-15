@@ -32,7 +32,10 @@
 #include <QObject>
 #include <QStringList>
 #include <QHostAddress>
+#include "jwt.h"
 #include "xffrule.h"
+
+class StatsManager;
 
 class Engine : public QObject
 {
@@ -78,14 +81,15 @@ public:
 		bool logFrom;
 		bool logUserAgent;
 		QByteArray sigIss;
-		QByteArray sigKey;
-		QByteArray upstreamKey;
+		Jwt::EncodingKey sigKey;
+		Jwt::DecodingKey upstreamKey;
 		QString sockJsUrl;
 		QString updatesCheck;
 		QString organizationName;
 		bool quietCheck;
 		int connectionsMax;
 		int statsConnectionTtl;
+		int statsReportInterval;
 		QString prometheusPort;
 		QString prometheusPrefix;
 
@@ -105,13 +109,16 @@ public:
 			updatesCheck("check"),
 			quietCheck(false),
 			connectionsMax(-1),
-			statsConnectionTtl(-1)
+			statsConnectionTtl(-1),
+			statsReportInterval(-1)
 		{
 		}
 	};
 
 	Engine(QObject *parent = 0);
 	~Engine();
+
+	StatsManager *statsManager() const;
 
 	bool start(const Configuration &config);
 	void reload();

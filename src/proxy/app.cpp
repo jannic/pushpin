@@ -53,14 +53,6 @@ static void trimlist(QStringList *list)
 	}
 }
 
-static QByteArray parse_key(const QString &in)
-{
-	if(in.startsWith("base64:"))
-		return QByteArray::fromBase64(in.mid(7).toUtf8());
-	else
-		return in.toUtf8();
-}
-
 static XffRule parse_xffRule(const QStringList &in)
 {
 	XffRule out;
@@ -252,6 +244,8 @@ public:
 			}
 		}
 
+		QDir configDir = QFileInfo(configFile).absoluteDir();
+
 		Settings settings(configFile);
 
 		if(!args.ipcPrefix.isEmpty())
@@ -308,13 +302,14 @@ public:
 		bool logFrom = settings.value("proxy/log_from").toBool();
 		bool logUserAgent = settings.value("proxy/log_user_agent").toBool();
 		QByteArray sigIss = settings.value("proxy/sig_iss", "pushpin").toString().toUtf8();
-		QByteArray sigKey = parse_key(settings.value("proxy/sig_key").toString());
-		QByteArray upstreamKey = parse_key(settings.value("proxy/upstream_key").toString());
+		Jwt::EncodingKey sigKey = Jwt::EncodingKey::fromConfigString(settings.value("proxy/sig_key").toString(), configDir);
+		Jwt::DecodingKey upstreamKey = Jwt::DecodingKey::fromConfigString(settings.value("proxy/upstream_key").toString(), configDir);
 		QString sockJsUrl = settings.value("proxy/sockjs_url").toString();
 		QString updatesCheck = settings.value("proxy/updates_check","off").toString();
 		QString organizationName = settings.value("proxy/organization_name").toString();
 		int clientMaxconn = settings.value("runner/client_maxconn", 50000).toInt();
 		int statsConnectionTtl = settings.value("global/stats_connection_ttl", 120).toInt();
+		int statsReportInterval = settings.value("proxy/stats_report_interval", 10).toInt();
 		QString prometheusPort = settings.value("proxy/prometheus_port").toString();
 		QString prometheusPrefix = settings.value("proxy/prometheus_prefix").toString();
 
@@ -325,7 +320,7 @@ public:
 		// if routesfile is a relative path, then use it relative to the config file location
 		QFileInfo fi(routesFile);
 		if(fi.isRelative())
-			routesFile = QFileInfo(QFileInfo(configFile).absoluteDir(), routesFile).filePath();
+			routesFile = QFileInfo(configDir, routesFile).filePath();
 
 		if(!(!condure_in_specs.isEmpty() && !condure_in_stream_specs.isEmpty() && !condure_out_specs.isEmpty()) && !(!m2a_in_specs.isEmpty() && !m2a_in_stream_specs.isEmpty() && !m2a_out_specs.isEmpty()))
 		{
@@ -398,6 +393,7 @@ public:
 		config.quietCheck = args.quietCheck;
 		config.connectionsMax = clientMaxconn;
 		config.statsConnectionTtl = statsConnectionTtl;
+		config.statsReportInterval = statsReportInterval;
 		config.prometheusPort = prometheusPort;
 		config.prometheusPrefix = prometheusPrefix;
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2017 Fanout, Inc.
+ * Copyright (C) 2012-2022 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
@@ -37,6 +37,7 @@
 #include "packet/httpresponsedata.h"
 #include "bufferlist.h"
 #include "log.h"
+#include "jwt.h"
 #include "inspectdata.h"
 #include "acceptdata.h"
 #include "zhttpmanager.h"
@@ -46,6 +47,7 @@
 #include "xffrule.h"
 #include "requestsession.h"
 #include "proxyutil.h"
+#include "statsmanager.h"
 #include "acceptrequest.h"
 #include "testhttprequest.h"
 
@@ -89,13 +91,17 @@ public:
 		bool startedResponse;
 		bool unclean;
 		int bytesToWrite;
+		bool countClientReceivedBytes;
+		bool countClientSentBytes;
 
 		SessionItem() :
 			rs(0),
 			state(WaitingForResponse),
 			startedResponse(false),
 			unclean(false),
-			bytesToWrite(0)
+			bytesToWrite(0),
+			countClientReceivedBytes(true),
+			countClientSentBytes(true)
 		{
 		}
 	};
@@ -104,7 +110,7 @@ public:
 	State state;
 	ZRoutes *zroutes;
 	ZhttpManager *zhttpManager;
-	ZhttpRequest *inRequest;
+	RequestSession *inRequest;
 	ZrpcManager *acceptManager;
 	bool isHttps;
 	DomainMap::Entry route;
@@ -131,7 +137,7 @@ public:
 	int total;
 	bool buffering;
 	QByteArray defaultSigIss;
-	QByteArray defaultSigKey;
+	Jwt::EncodingKey defaultSigKey;
 	bool trustedClient;
 	bool intReq;
 	bool passthrough;
@@ -141,12 +147,14 @@ public:
 	XffRule xffRule;
 	XffRule xffTrustedRule;
 	QList<QByteArray> origHeadersNeedMark;
+	bool acceptPushpinRoute;
 	bool proxyInitialResponse;
 	bool acceptAfterResponding;
 	AcceptRequest *acceptRequest;
 	LogUtil::Config logConfig;
+	StatsManager *statsManager;
 
-	Private(ProxySession *_q, ZRoutes *_zroutes, ZrpcManager *_acceptManager, const LogUtil::Config &_logConfig) :
+	Private(ProxySession *_q, ZRoutes *_zroutes, ZrpcManager *_acceptManager, const LogUtil::Config &_logConfig, StatsManager *_statsManager) :
 		QObject(_q),
 		q(_q),
 		state(Stopped),
@@ -168,10 +176,12 @@ public:
 		acceptXForwardedProtocol(false),
 		useXForwardedProto(false),
 		useXForwardedProtocol(false),
+		acceptPushpinRoute(false),
 		proxyInitialResponse(false),
 		acceptAfterResponding(false),
 		acceptRequest(0),
-		logConfig(_logConfig)
+		logConfig(_logConfig),
+		statsManager(_statsManager)
 	{
 		acceptHeaderPrefixes += "Grip-";
 		acceptContentTypes += "application/grip-instruct";
@@ -211,6 +221,17 @@ public:
 		si->rs = rs;
 		si->rs->setParent(this);
 
+		// a retried request already had its received bytes counted earlier
+		if(rs->isRetry())
+			si->countClientReceivedBytes = false;
+
+		// internal requests originate internally and should not have client bytes counted
+		if(rs->request()->passthroughData().isValid())
+		{
+			si->countClientReceivedBytes = false;
+			si->countClientSentBytes = false;
+		}
+
 		if(!sessionItems.isEmpty())
 			shared = true;
 
@@ -220,12 +241,22 @@ public:
 		connect(rs, &RequestSession::errorResponding, this, &Private::rs_errorResponding);
 		connect(rs, &RequestSession::finished, this, &Private::rs_finished);
 		connect(rs, &RequestSession::paused, this, &Private::rs_paused);
+		connect(rs, &RequestSession::headerBytesSent, this, &Private::rs_headerBytesSent);
+		connect(rs, &RequestSession::bodyBytesSent, this, &Private::rs_bodyBytesSent);
+
+		HttpRequestData rsRequestData = rs->requestData();
+
+		if(si->countClientReceivedBytes)
+		{
+			incCounter(Stats::ClientHeaderBytesReceived, ZhttpManager::estimateRequestHeaderBytes(rsRequestData.method, rsRequestData.uri, rsRequestData.headers));
+			incCounter(Stats::ClientContentBytesReceived, rsRequestData.body.size());
+		}
 
 		if(state == Stopped)
 		{
 			isHttps = rs->isHttps();
 
-			requestData = rs->requestData();
+			requestData = rsRequestData;
 			requestBody += requestData.body;
 			requestData.body.clear();
 
@@ -245,8 +276,8 @@ public:
 			requestData.uri.setPath(QString::fromUtf8(path), QUrl::StrictMode);
 
 			QByteArray sigIss;
-			QByteArray sigKey;
-			if(!route.sigIss.isEmpty() && !route.sigKey.isEmpty())
+			Jwt::EncodingKey sigKey;
+			if(!route.sigIss.isEmpty() && !route.sigKey.isNull())
 			{
 				sigIss = route.sigIss;
 				sigKey = route.sigKey;
@@ -268,20 +299,22 @@ public:
 
 			if(!rs->isRetry())
 			{
-				inRequest = rs->request();
+				inRequest = rs;
 
-				connect(inRequest, &ZhttpRequest::readyRead, this, &Private::inRequest_readyRead);
-				connect(inRequest, &ZhttpRequest::error, this, &Private::inRequest_error);
+				ZhttpRequest *req = inRequest->request();
 
-				requestBody += inRequest->readBody();
+				connect(req, &ZhttpRequest::readyRead, this, &Private::inRequest_readyRead);
+				connect(req, &ZhttpRequest::error, this, &Private::inRequest_error);
 
-				intReq = inRequest->passthroughData().isValid();
+				requestBody += req->readBody();
+
+				intReq = req->passthroughData().isValid();
 			}
 
 			trustedClient = rs->trusted();
 			QHostAddress clientAddress = rs->request()->peerAddress();
 
-			ProxyUtil::manipulateRequestHeaders("proxysession", q, &requestData, trustedClient, route, sigIss, sigKey, acceptXForwardedProtocol, useXForwardedProto, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, clientAddress, idata, route.grip, intReq);
+			ProxyUtil::manipulateRequestHeaders("proxysession", q, &requestData, trustedClient, route, sigIss, sigKey, acceptXForwardedProtocol, useXForwardedProto, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, acceptPushpinRoute, clientAddress, idata, route.grip, intReq);
 
 			state = Requesting;
 			buffering = true;
@@ -433,22 +466,26 @@ public:
 
 		ProxyUtil::applyHostHeader(&requestData.headers, uri);
 
+		incCounter(Stats::ServerHeaderBytesSent, ZhttpManager::estimateRequestHeaderBytes(requestData.method, uri, requestData.headers));
+
 		zhttpRequest->start(requestData.method, uri, requestData.headers);
 
 		requestBodySent = false;
 
 		if(!initialRequestBody.isEmpty())
 		{
+			incCounter(Stats::ServerContentBytesSent, initialRequestBody.size());
+
 			requestBytesToWrite += initialRequestBody.size();
 			zhttpRequest->writeBody(initialRequestBody);
 		}
 
-		if(!inRequest || (inRequest->isInputFinished() && inRequest->bytesAvailable() == 0))
+		if(!inRequest || (inRequest->request()->isInputFinished() && inRequest->request()->bytesAvailable() == 0))
 		{
 			// no need to track the primary request anymore
 			if(inRequest)
 			{
-				inRequest->disconnect(this);
+				inRequest->request()->disconnect(this);
 				inRequest = 0;
 			}
 
@@ -468,10 +505,16 @@ public:
 		if(!buffering && requestBytesToWrite > 0)
 			return;
 
-		QByteArray buf = inRequest->readBody(MAX_STREAM_BUFFER);
+		QByteArray buf = inRequest->request()->readBody(MAX_STREAM_BUFFER);
 		if(!buf.isEmpty())
 		{
 			log_debug("proxysession: %p input chunk: %d", q, buf.size());
+
+			SessionItem *si = sessionItemsBySession.value(inRequest);
+			assert(si);
+
+			if(si->countClientReceivedBytes)
+				incCounter(Stats::ClientContentBytesReceived, buf.size());
 
 			if(buffering)
 			{
@@ -484,14 +527,16 @@ public:
 					requestBody += buf;
 			}
 
+			incCounter(Stats::ServerContentBytesSent, buf.size());
+
 			requestBytesToWrite += buf.size();
 			zhttpRequest->writeBody(buf);
 		}
 
-		if(!requestBodySent && inRequest->isInputFinished() && inRequest->bytesAvailable() == 0)
+		if(!requestBodySent && inRequest->request()->isInputFinished() && inRequest->request()->bytesAvailable() == 0)
 		{
 			// no need to track the primary request anymore
-			inRequest->disconnect(this);
+			inRequest->request()->disconnect(this);
 			inRequest = 0;
 
 			requestBodySent = true;
@@ -540,6 +585,7 @@ public:
 						//   this may ruin the content, but hey it's debug
 						//   mode
 						QByteArray buf = "\n\nAccept service unavailable\n";
+
 						si->bytesToWrite += buf.size();
 						si->rs->writeResponseBody(buf);
 						si->rs->endResponseBody();
@@ -603,6 +649,7 @@ public:
 						//   this may ruin the content, but hey it's debug
 						//   mode
 						QByteArray buf = "\n\n" + debugErrorMessage.toUtf8() + '\n';
+
 						si->bytesToWrite += buf.size();
 						si->rs->writeResponseBody(buf);
 						si->rs->endResponseBody();
@@ -815,6 +862,8 @@ public:
 
 		if(!buf.isEmpty())
 		{
+			incCounter(Stats::ServerContentBytesReceived, buf.size());
+
 			total += buf.size();
 			log_debug("proxysession: %p recv=%d, total=%d, avail=%d", q, buf.size(), total, zhttpRequest->bytesAvailable());
 
@@ -980,6 +1029,12 @@ public:
 		LogUtil::logRequest(LOG_LEVEL_INFO, rd, logConfig);
 	}
 
+	void incCounter(Stats::Counter c, int count = 1)
+	{
+		if(statsManager)
+			statsManager->incCounter(route.statsRoute(), c, count);
+	}
+
 public slots:
 	void inRequest_readyRead()
 	{
@@ -1002,11 +1057,17 @@ public slots:
 			responseData.code = zhttpRequest->responseCode();
 			responseData.reason = zhttpRequest->responseReason();
 			responseData.headers = zhttpRequest->responseHeaders();
-			responseBody += zhttpRequest->readBody(MAX_INITIAL_BUFFER);
+
+			QByteArray buf = zhttpRequest->readBody(MAX_INITIAL_BUFFER);
+
+			incCounter(Stats::ServerHeaderBytesReceived, ZhttpManager::estimateResponseHeaderBytes(responseData.code, responseData.reason, responseData.headers));
+			incCounter(Stats::ServerContentBytesReceived, buf.size());
+
+			responseBody += buf;
+			total += buf.size();
 
 			acceptResponseData = responseData;
 
-			total += responseBody.size();
 			log_debug("proxysession: %p recv total: %d", q, total);
 
 			bool doAccept = false;
@@ -1149,7 +1210,7 @@ public slots:
 			return;
 
 		ZhttpRequest *req = rs->request();
-		bool wasInputRequest = (req && req == inRequest);
+		bool wasInputRequest = (req && inRequest && req == inRequest->request());
 
 		sessionItemsBySession.remove(rs);
 		sessionItems.remove(si);
@@ -1199,8 +1260,8 @@ public slots:
 			assert(!acceptRequest);
 
 			QByteArray sigIss;
-			QByteArray sigKey;
-			if(!route.sigIss.isEmpty() && !route.sigKey.isEmpty())
+			Jwt::EncodingKey sigKey;
+			if(!route.sigIss.isEmpty() && !route.sigKey.isNull())
 			{
 				sigIss = route.sigIss;
 				sigKey = route.sigKey;
@@ -1255,8 +1316,6 @@ public slots:
 			adata.channelPrefix = route.prefix;
 			foreach(const QString &s, target.subscriptions)
 				adata.channels += s.toUtf8();
-			adata.sigIss = sigIss;
-			adata.sigKey = sigKey;
 			adata.trusted = target.trusted;
 			adata.useSession = route.session;
 			adata.responseSent = acceptAfterResponding;
@@ -1283,6 +1342,28 @@ public slots:
 		si->bytesToWrite = -1;
 
 		// don't destroy the RequestSession here. a finished signal will arrive next.
+	}
+
+	void rs_headerBytesSent(int count)
+	{
+		RequestSession *rs = (RequestSession *)sender();
+
+		SessionItem *si = sessionItemsBySession.value(rs);
+		assert(si);
+
+		if(si->countClientSentBytes)
+			incCounter(Stats::ClientHeaderBytesSent, count);
+	}
+
+	void rs_bodyBytesSent(int count)
+	{
+		RequestSession *rs = (RequestSession *)sender();
+
+		SessionItem *si = sessionItemsBySession.value(rs);
+		assert(si);
+
+		if(si->countClientSentBytes)
+			incCounter(Stats::ClientContentBytesSent, count);
 	}
 
 	void acceptRequest_finished()
@@ -1384,10 +1465,10 @@ public slots:
 	}
 };
 
-ProxySession::ProxySession(ZRoutes *zroutes, ZrpcManager *acceptManager, const LogUtil::Config &logConfig, QObject *parent) :
+ProxySession::ProxySession(ZRoutes *zroutes, ZrpcManager *acceptManager, const LogUtil::Config &logConfig, StatsManager *statsManager, QObject *parent) :
 	QObject(parent)
 {
-	d = new Private(this, zroutes, acceptManager, logConfig);
+	d = new Private(this, zroutes, acceptManager, logConfig, statsManager);
 }
 
 ProxySession::~ProxySession()
@@ -1400,7 +1481,7 @@ void ProxySession::setRoute(const DomainMap::Entry &route)
 	d->route = route;
 }
 
-void ProxySession::setDefaultSigKey(const QByteArray &iss, const QByteArray &key)
+void ProxySession::setDefaultSigKey(const QByteArray &iss, const Jwt::EncodingKey &key)
 {
 	d->defaultSigIss = iss;
 	d->defaultSigKey = key;
@@ -1426,6 +1507,11 @@ void ProxySession::setXffRules(const XffRule &untrusted, const XffRule &trusted)
 void ProxySession::setOrigHeadersNeedMark(const QList<QByteArray> &names)
 {
 	d->origHeadersNeedMark = names;
+}
+
+void ProxySession::setAcceptPushpinRoute(bool enabled)
+{
+	d->acceptPushpinRoute = enabled;
 }
 
 void ProxySession::setProxyInitialResponseEnabled(bool enabled)
