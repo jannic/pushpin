@@ -35,7 +35,7 @@ override_dh_auto_configure:
 	# Upstream Cargo.lock contains versions not valid for debian
 	rm Cargo.lock
 	# Upstream config.toml references vendored dependencies not part of the debian package
-	rm .cargo/config.toml
+	-rm .cargo/config.toml
 	cargo update
 
 override_dh_auto_install:
