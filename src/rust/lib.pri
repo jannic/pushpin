@@ -1,3 +1,5 @@
+CONFIG -= debug
+
 CONFIG(debug, debug|release) {
 	RUST_BUILD_DIR = $$PWD/../../target/debug
 } else {
