@@ -1,6 +1,8 @@
 pushpin (1.36.0-1) UNRELEASED; urgency=medium
 
   * New upstream version
+  * Change pushpin home directory in adduser call to /run/pushpin,
+    fixing lintian warning "adduser-with-home-var-run".
 
  -- Jan Niehusmann <jan@debian.org>  Tue, 15 Nov 2022 20:02:01 +0100
 

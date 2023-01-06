@@ -46,7 +46,7 @@ case "$1" in
 esac
 
 if ! getent passwd pushpin >/dev/null; then
-    adduser --quiet --system --no-create-home --home /var/run/pushpin --ingroup zurl pushpin
+    adduser --quiet --system --no-create-home --home /run/pushpin --ingroup zurl pushpin
 fi
 
 chown pushpin /var/log/pushpin
