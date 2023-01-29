@@ -1,3 +1,10 @@
+pushpin (1.36.0-2) UNRELEASED; urgency=medium
+
+  * Depend on librust-clap-2-dev instead of librust-clap+*-dev
+    (Closes: Bug#1029905)
+
+ -- Jan Niehusmann <jan@debian.org>  Sun, 29 Jan 2023 09:34:29 +0100
+
 pushpin (1.36.0-1) unstable; urgency=medium
 
   * New upstream version
