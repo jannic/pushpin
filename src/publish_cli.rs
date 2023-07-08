@@ -1,27 +1,21 @@
 /*
- * Copyright (C) 2021 Fanout, Inc.
+ * Copyright (C) 2021-2023 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
- * $FANOUT_BEGIN_LICENSE:AGPL$
+ * $FANOUT_BEGIN_LICENSE:APACHE2$
  *
- * Pushpin is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Affero General Public License as published by the Free
- * Software Foundation, either version 3 of the License, or (at your option)
- * any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * Pushpin is distributed in the hope that it will be useful, but WITHOUT ANY
- * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
- * FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
- * more details.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * Alternatively, Pushpin may be used under the terms of a commercial license,
- * where the commercial license agreement is provided with the software or
- * contained in a written agreement between you and Fanout. For further
- * information use the contact form at <https://fanout.io/enterprise/>.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * $FANOUT_END_LICENSE$
  */
@@ -47,7 +41,7 @@ enum TnValue {
 }
 
 impl TnValue {
-    fn write_to<'a>(&'a self, w: &mut tnetstring::Writer<'a>) -> Result<(), io::Error> {
+    fn write_to<'a>(&'a self, w: &mut tnetstring::Writer<'a, '_>) -> Result<(), io::Error> {
         match self {
             Self::Null => w.write_null(),
             Self::Bool(b) => w.write_bool(*b),
@@ -78,8 +72,9 @@ impl TnValue {
 
     pub fn serialize(&self) -> Result<Vec<u8>, io::Error> {
         let mut out = Vec::new();
+        let mut cursor = io::Cursor::new(&mut out[..]);
 
-        let mut w = tnetstring::Writer::new(&mut out);
+        let mut w = tnetstring::Writer::new(&mut cursor);
         self.write_to(&mut w)?;
 
         w.flush()?;
@@ -159,13 +154,11 @@ fn tnet_to_json(v: &TnValue) -> Result<serde_json::Value, io::Error> {
 
             for (k, v) in m {
                 if let TnValue::String(s) = v {
-                    if k == "body" || k == "content" {
-                        if str::from_utf8(s).is_err() {
-                            let k = k.to_owned() + "-bin";
-                            let v = base64::encode(s);
-                            out.insert(k, serde_json::Value::String(v));
-                            continue;
-                        }
+                    if (k == "body" || k == "content") && str::from_utf8(s).is_err() {
+                        let k = k.to_owned() + "-bin";
+                        let v = base64::encode(s);
+                        out.insert(k, serde_json::Value::String(v));
+                        continue;
                     }
                 }
 
@@ -186,7 +179,7 @@ struct ParsedUrl {
 }
 
 fn parse_url(url: &str) -> Result<ParsedUrl, io::Error> {
-    let pos = match url.find(":") {
+    let pos = match url.find(':') {
         Some(pos) => pos,
         None => return Err(io::Error::from(io::ErrorKind::InvalidData)),
     };
@@ -201,7 +194,7 @@ fn parse_url(url: &str) -> Result<ParsedUrl, io::Error> {
 
     let s = &s[2..];
 
-    let pos = match s.find("/") {
+    let pos = match s.find('/') {
         Some(pos) => pos,
         None => s.len(),
     };
@@ -265,9 +258,9 @@ impl TlsStream {
 impl Read for TlsStream {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         match self.stream.read(buf) {
-            Ok(ret) => return Ok(ret),
-            Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => return Ok(0),
-            Err(e) => return Err(e),
+            Ok(ret) => Ok(ret),
+            Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => Ok(0),
+            Err(e) => Err(e),
         }
     }
 }
@@ -284,7 +277,7 @@ impl Write for TlsStream {
 
 enum Stream {
     Plain(net::TcpStream),
-    Tls(TlsStream),
+    Tls(Box<TlsStream>),
 }
 
 impl Read for Stream {
@@ -324,8 +317,7 @@ fn publish_http(
 
     let path = parsed_url.path + "/publish/";
 
-    let mut items = Vec::new();
-    items.push(item.clone());
+    let items = vec![item.clone()];
 
     let mut data = serde_json::Map::new();
     data.insert("items".into(), serde_json::Value::Array(items));
@@ -358,14 +350,14 @@ fn publish_http(
         net::TcpStream::connect((parsed_url.connect_host.as_str(), parsed_url.connect_port))?;
 
     let mut stream = if parsed_url.scheme == "https" {
-        Stream::Tls(TlsStream::new(stream, &parsed_url.host)?)
+        Stream::Tls(Box::new(TlsStream::new(stream, &parsed_url.host)?))
     } else {
         Stream::Plain(stream)
     };
 
-    stream.write(req.as_bytes())?;
+    stream.write_all(req.as_bytes())?;
 
-    stream.write(&body)?;
+    stream.write_all(&body)?;
 
     let mut reader = io::BufReader::new(&mut stream);
 
@@ -478,9 +470,7 @@ pub fn run(config: &Config) -> Result<(), Box<dyn Error>> {
 
             match &msg.content {
                 Content::Value(s) => {
-                    let (http_content, ws_content) = if s.starts_with("@") {
-                        let name = &s[1..];
-
+                    let (http_content, ws_content) = if let Some(name) = s.strip_prefix('@') {
                         let mut f = match fs::File::open(name) {
                             Ok(f) => f,
                             Err(e) => return Err(format!("can't read file {}: {}", name, e).into()),
@@ -530,10 +520,10 @@ pub fn run(config: &Config) -> Result<(), Box<dyn Error>> {
                 let mut headers = Vec::new();
 
                 for (name, value) in config.headers.iter() {
-                    let mut header = Vec::new();
-
-                    header.push(TnValue::String(name.clone().into()));
-                    header.push(TnValue::String(value.clone().into()));
+                    let header = vec![
+                        TnValue::String(name.clone().into()),
+                        TnValue::String(value.clone().into()),
+                    ];
 
                     headers.push(TnValue::Array(header));
                 }
@@ -613,7 +603,7 @@ pub fn run(config: &Config) -> Result<(), Box<dyn Error>> {
     if config.spec.starts_with("https:") || config.spec.starts_with("http:") {
         let item = tnet_to_json(&item)?;
 
-        let basic_auth = config.basic_auth.as_ref().map(|s| s.as_str());
+        let basic_auth = config.basic_auth.as_deref();
 
         publish_http(&config.spec, basic_auth, &item)?;
     } else {

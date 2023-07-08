@@ -1,27 +1,22 @@
 /*
- * Copyright (C) 2016-2022 Fanout, Inc.
+ * Copyright (C) 2016-2023 Fanout, Inc.
+ * Copyright (C) 2023 Fastly, Inc.
  *
  * This file is part of Pushpin.
  *
- * $FANOUT_BEGIN_LICENSE:AGPL$
+ * $FANOUT_BEGIN_LICENSE:APACHE2$
  *
- * Pushpin is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Affero General Public License as published by the Free
- * Software Foundation, either version 3 of the License, or (at your option)
- * any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * Pushpin is distributed in the hope that it will be useful, but WITHOUT ANY
- * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
- * FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
- * more details.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * Alternatively, Pushpin may be used under the terms of a commercial license,
- * where the commercial license agreement is provided with the software or
- * contained in a written agreement between you and Fanout. For further
- * information use the contact form at <https://fanout.io/enterprise/>.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * $FANOUT_END_LICENSE$
  */
@@ -177,12 +172,10 @@ public:
 	FilterStack *responseFilters;
 	QSet<QString> activeChannels;
 	int connectionSubscriptionMax;
-	SubscribeFunc subscribeCallback;
-	void *subscribeData;
-	UnsubscribeFunc unsubscribeCallback;
-	void *unsubscribeData;
-	FinishedFunc finishedCallback;
-	void *finishedData;
+	bool needRemoveFromStats;
+	Callback<std::tuple<HttpSession *, const QString &>> subscribeCallback;
+	Callback<std::tuple<HttpSession *, const QString &>> unsubscribeCallback;
+	Callback<std::tuple<HttpSession *>> finishedCallback;
 
 	Private(HttpSession *_q, ZhttpRequest *_req, const HttpSession::AcceptData &_adata, const Instruct &_instruct, ZhttpManager *_outZhttp, StatsManager *_stats, RateLimiter *_updateLimiter, PublishLastIds *_publishLastIds, HttpSessionUpdateManager *_updateManager, int _connectionSubscriptionMax) :
 		QObject(_q),
@@ -201,12 +194,7 @@ public:
 		pendingAction(0),
 		responseFilters(0),
 		connectionSubscriptionMax(_connectionSubscriptionMax),
-		subscribeCallback(0),
-		subscribeData(0),
-		unsubscribeCallback(0),
-		unsubscribeData(0),
-		finishedCallback(0),
-		finishedData(0)
+		needRemoveFromStats(true)
 	{
 		state = NotStarted;
 
@@ -234,6 +222,14 @@ public:
 	{
 		cleanup();
 
+		if(needRemoveFromStats)
+		{
+			ZhttpRequest::Rid rid = req->rid();
+			QByteArray cid = rid.first + ':' + rid.second;
+
+			stats->removeConnection(cid, false);
+		}
+
 		updateManager->unregisterSession(q);
 
 		timer->disconnect(this);
@@ -249,9 +245,6 @@ public:
 	{
 		assert(state == NotStarted);
 
-		ZhttpRequest::Rid rid = req->rid();
-		stats->addConnection(rid.first + ':' + rid.second, adata.statsRoute.toUtf8(), StatsManager::Http, adata.logicalPeerAddress, req->requestUri().scheme() == "https", true);
-
 		// set up implicit channels
 		QPointer<QObject> self = this;
 		foreach(const QString &name, adata.implicitChannels)
@@ -263,10 +256,7 @@ public:
 
 				channels.insert(name, c);
 
-				if(subscribeCallback)
-				{
-					subscribeCallback(subscribeData, q, name);
-				}
+				subscribeCallback.call({q, name});
 
 				assert(self); // deleting here would leak subscriptions/connections
 			}
@@ -684,20 +674,14 @@ private:
 
 		foreach(const QString &channel, channelsRemoved)
 		{
-			if(unsubscribeCallback)
-			{
-				unsubscribeCallback(unsubscribeData, q, channel);
-			}
+			unsubscribeCallback.call({q, channel});
 
 			assert(self); // deleting here would leak subscriptions/connections
 		}
 
 		foreach(const QString &channel, channelsAdded)
 		{
-			if(subscribeCallback)
-			{
-				subscribeCallback(subscribeData, q, channel);
-			}
+			subscribeCallback.call({q, channel});
 
 			assert(self); // deleting here would leak subscriptions/connections
 		}
@@ -1075,10 +1059,7 @@ private:
 			it.next();
 			const QString &channel = it.key();
 
-			if(unsubscribeCallback)
-			{
-				unsubscribeCallback(unsubscribeData, q, channel);
-			}
+			unsubscribeCallback.call({q, channel});
 
 			assert(self); // deleting here would leak subscriptions/connections
 		}
@@ -1087,7 +1068,10 @@ private:
 		{
 			// refresh before remove, to ensure transition
 			stats->refreshConnection(cid);
-			stats->removeConnection(cid, true);
+
+			needRemoveFromStats = false;
+
+			int unreportedTime = stats->removeConnection(cid, true);
 
 			ZhttpRequest::ServerState ss = req->serverState();
 
@@ -1101,6 +1085,8 @@ private:
 			rpreq.autoCrossOrigin = adata.autoCrossOrigin;
 			rpreq.jsonpCallback = adata.jsonpCallback;
 			rpreq.jsonpExtendedResponse = adata.jsonpExtendedResponse;
+			if(!stats->connectionSendEnabled())
+				rpreq.unreportedTime = unreportedTime;
 			rpreq.inSeq = ss.inSeq;
 			rpreq.outSeq = ss.outSeq;
 			rpreq.outCredits = ss.outCredits;
@@ -1141,18 +1127,18 @@ private:
 			}
 
 			rp.route = adata.route.toUtf8();
+			rp.retrySeq = stats->lastRetrySeq();
 
 			retryPacket = rp;
 		}
 		else
 		{
+			needRemoveFromStats = false;
+
 			stats->removeConnection(cid, false);
 		}
 
-		if(finishedCallback)
-		{
-			finishedCallback(finishedData, q);
-		}
+		finishedCallback.call({q});
 	}
 
 	void requestNextLink()
@@ -1620,22 +1606,19 @@ void HttpSession::publish(const PublishItem &item, const QList<QByteArray> &expo
 	d->publish(item, exposeHeaders);
 }
 
-void HttpSession::setSubscribeCallback(SubscribeFunc cb, void *data)
+Callback<std::tuple<HttpSession *, const QString &>> & HttpSession::subscribeCallback()
 {
-	d->subscribeCallback = cb;
-	d->subscribeData = data;
+	return d->subscribeCallback;
 }
 
-void HttpSession::setUnsubscribeCallback(UnsubscribeFunc cb, void *data)
+Callback<std::tuple<HttpSession *, const QString &>> & HttpSession::unsubscribeCallback()
 {
-	d->unsubscribeCallback = cb;
-	d->unsubscribeData = data;
+	return d->unsubscribeCallback;
 }
 
-void HttpSession::setFinishedCallback(FinishedFunc cb, void *data)
+Callback<std::tuple<HttpSession *>> & HttpSession::finishedCallback()
 {
-	d->finishedCallback = cb;
-	d->finishedData = data;
+	return d->finishedCallback;
 }
 
 #include "httpsession.moc"
