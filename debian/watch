@@ -1,2 +1,4 @@
 version=4
-https://github.com/fanout/pushpin/releases .*/pushpin-(\d\S+)\.tar\.bz2
+opts="filenamemangle=s%(?:.*?)?v?@ANY_VERSION@(@ARCHIVE_EXT@)%@PACKAGE@-$1$2%" \
+    https://github.com/fanout/pushpin/tags \
+    (?:.*?/)?v?@ANY_VERSION@@ARCHIVE_EXT@
