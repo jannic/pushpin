@@ -1,3 +1,9 @@
+pushpin (1.36.0-3) UNRELEASED; urgency=medium
+
+  * Relaxed upper limit from base64 dependency. (Closes: #1037352)
+
+ -- Jan Niehusmann <jan@debian.org>  Sat, 08 Jul 2023 13:03:55 +0200
+
 pushpin (1.36.0-2) unstable; urgency=medium
 
   * Depend on librust-clap-2-dev instead of librust-clap+*-dev
