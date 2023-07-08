@@ -1,3 +1,9 @@
+pushpin (1.37.0-1) UNRELEASED; urgency=medium
+
+  * New upstream version
+
+ -- Jan Niehusmann <jan@debian.org>  Sat, 08 Jul 2023 13:44:15 +0200
+
 pushpin (1.36.0-3) unstable; urgency=medium
 
   * Relaxed upper limit from base64 dependency. (Closes: #1037352)
