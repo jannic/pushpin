@@ -1,27 +1,21 @@
 /*
- * Copyright (C) 2014-2021 Fanout, Inc.
+ * Copyright (C) 2014-2023 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
- * $FANOUT_BEGIN_LICENSE:AGPL$
+ * $FANOUT_BEGIN_LICENSE:APACHE2$
  *
- * Pushpin is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Affero General Public License as published by the Free
- * Software Foundation, either version 3 of the License, or (at your option)
- * any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * Pushpin is distributed in the hope that it will be useful, but WITHOUT ANY
- * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
- * FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
- * more details.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * Alternatively, Pushpin may be used under the terms of a commercial license,
- * where the commercial license agreement is provided with the software or
- * contained in a written agreement between you and Fanout. For further
- * information use the contact form at <https://fanout.io/enterprise/>.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * $FANOUT_END_LICENSE$
  */
@@ -29,11 +23,11 @@
 #include "zwebsocket.h"
 
 #include <assert.h>
-#include <QTimer>
 #include <QPointer>
 #include "zhttprequestpacket.h"
 #include "zhttpresponsepacket.h"
 #include "log.h"
+#include "rtimer.h"
 #include "zhttpmanager.h"
 #include "uuidutil.h"
 
@@ -87,8 +81,8 @@ public:
 	QVariant userData;
 	bool pendingUpdate;
 	ErrorCondition errorCondition;
-	QTimer *expireTimer;
-	QTimer *keepAliveTimer;
+	RTimer *expireTimer;
+	RTimer *keepAliveTimer;
 	QList<Frame> inFrames;
 	QList<Frame> outFrames;
 	int inSize;
@@ -123,12 +117,12 @@ public:
 		outContentType((int)Frame::Text),
 		multi(false)
 	{
-		expireTimer = new QTimer(this);
-		connect(expireTimer, &QTimer::timeout, this, &Private::expire_timeout);
+		expireTimer = new RTimer(this);
+		connect(expireTimer, &RTimer::timeout, this, &Private::expire_timeout);
 		expireTimer->setSingleShot(true);
 
-		keepAliveTimer = new QTimer(this);
-		connect(keepAliveTimer, &QTimer::timeout, this, &Private::keepAlive_timeout);
+		keepAliveTimer = new RTimer(this);
+		connect(keepAliveTimer, &RTimer::timeout, this, &Private::keepAlive_timeout);
 	}
 
 	~Private()
@@ -305,10 +299,9 @@ public:
 
 	void writeFrame(const Frame &frame)
 	{
-		// FIXME: consider removing this assert. due to async signals,
-		//   the only way for the user to fully avoid it is by checking
-		//   canWrite() beforehand which is burdensome
-		assert(state == Connected || state == ConnectedPeerClosed);
+		if(state != Connected && state != ConnectedPeerClosed)
+			return;
+
 		outFrames += frame;
 		update();
 	}
@@ -405,7 +398,7 @@ public:
 				contentBytesWritten += f.data.size();
 			}
 
-			if(written > 0)
+			if(written > 0 || contentBytesWritten > 0)
 			{
 				emit q->framesWritten(written, contentBytesWritten);
 				if(!self)
@@ -1216,25 +1209,6 @@ QByteArray ZWebSocket::responseBody() const
 int ZWebSocket::framesAvailable() const
 {
 	return d->inFrames.count();
-}
-
-bool ZWebSocket::canWrite() const
-{
-	return ((d->state == Private::Connected || d->state == Private::ConnectedPeerClosed) && writeBytesAvailable() > 0);
-}
-
-int ZWebSocket::writeBytesAvailable() const
-{
-	int avail = d->outCredits;
-	foreach(const Frame &f, d->outFrames)
-	{
-		if(f.data.size() >= avail)
-			return 0;
-
-		avail -= f.data.size();
-	}
-
-	return avail;
 }
 
 int ZWebSocket::peerCloseCode() const

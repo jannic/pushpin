@@ -1,27 +1,21 @@
 /*
- * Copyright (C) 2014-2022 Fanout, Inc.
+ * Copyright (C) 2014-2023 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
- * $FANOUT_BEGIN_LICENSE:AGPL$
+ * $FANOUT_BEGIN_LICENSE:APACHE2$
  *
- * Pushpin is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Affero General Public License as published by the Free
- * Software Foundation, either version 3 of the License, or (at your option)
- * any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * Pushpin is distributed in the hope that it will be useful, but WITHOUT ANY
- * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
- * FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
- * more details.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * Alternatively, Pushpin may be used under the terms of a commercial license,
- * where the commercial license agreement is provided with the software or
- * contained in a written agreement between you and Fanout. For further
- * information use the contact form at <https://fanout.io/enterprise/>.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * $FANOUT_END_LICENSE$
  */
@@ -29,7 +23,6 @@
 #include "wsproxysession.h"
 
 #include <assert.h>
-#include <QTimer>
 #include <QDateTime>
 #include <QUrl>
 #include <QJsonDocument>
@@ -38,6 +31,7 @@
 #include <QRandomGenerator>
 #include "packet/httprequestdata.h"
 #include "log.h"
+#include "rtimer.h"
 #include "jwt.h"
 #include "zhttpmanager.h"
 #include "zwebsocket.h"
@@ -55,6 +49,7 @@
 
 #define ACTIVITY_TIMEOUT 60000
 #define KEEPALIVE_RAND_MAX 1000
+#define PENDING_MAX 16384
 
 class HttpExtension
 {
@@ -259,6 +254,7 @@ public:
 	XffRule xffTrustedRule;
 	QList<QByteArray> origHeadersNeedMark;
 	bool acceptPushpinRoute;
+	QByteArray cdnLoop;
 	HttpRequestData requestData;
 	bool trustedClient;
 	QHostAddress logicalClientAddress;
@@ -280,11 +276,12 @@ public:
 	bool detached;
 	QDateTime activityTime;
 	QByteArray publicCid;
-	QTimer *keepAliveTimer;
+	RTimer *keepAliveTimer;
 	WsControl::KeepAliveMode keepAliveMode;
 	int keepAliveTimeout;
 	QList<QueuedFrame> queuedInFrames; // frames to deliver after out read finishes
 	LogUtil::Config logConfig;
+	Callback<std::tuple<WsProxySession *>> finishedByPassthroughCallback;
 
 	Private(WsProxySession *_q, ZRoutes *_zroutes, ConnectionManager *_connectionManager, const LogUtil::Config &_logConfig, StatsManager *_statsManager, WsControlManager *_wsControlManager) :
 		QObject(_q),
@@ -392,9 +389,10 @@ public:
 
 		route = entry;
 
+		log_debug("wsproxysession: %p %s has %d routes", q, qPrintable(host), route.targets.count());
+
 		if(route.isNull())
 		{
-			log_warning("wsproxysession: %p %s has 0 routes", q, qPrintable(host));
 			reject(false, 502, "Bad Gateway", QString("No route for host: %1").arg(host));
 			return;
 		}
@@ -429,8 +427,6 @@ public:
 		channelPrefix = route.prefix;
 		targets = route.targets;
 
-		log_debug("wsproxysession: %p %s has %d routes", q, qPrintable(host), targets.count());
-
 		foreach(const HttpHeader &h, route.headers)
 		{
 			requestData.headers.removeAll(h.first);
@@ -440,7 +436,7 @@ public:
 
 		clientAddress = inSock->peerAddress();
 
-		ProxyUtil::manipulateRequestHeaders("wsproxysession", q, &requestData, trustedClient, route, sigIss, sigKey, acceptXForwardedProtocol, useXForwardedProto, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, acceptPushpinRoute, clientAddress, InspectData(), route.grip, false);
+		ProxyUtil::manipulateRequestHeaders("wsproxysession", q, &requestData, trustedClient, route, sigIss, sigKey, acceptXForwardedProtocol, useXForwardedProto, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, acceptPushpinRoute, cdnLoop, clientAddress, InspectData(), route.grip, false);
 
 		// don't proxy extensions, as we may not know how to handle them
 		requestData.headers.removeAll("Sec-WebSocket-Extensions");
@@ -612,7 +608,7 @@ public:
 
 	void tryReadIn()
 	{
-		while(inSock->framesAvailable() > 0 && ((outSock && outSock->canWrite()) || detached))
+		while(inSock->framesAvailable() > 0 && ((outSock && outPendingBytes < PENDING_MAX) || detached))
 		{
 			WebSocket::Frame f = inSock->readFrame();
 
@@ -636,7 +632,7 @@ public:
 
 	void tryReadOut()
 	{
-		while(outSock->framesAvailable() > 0 && ((inSock && inSock->canWrite()) || detached))
+		while(outSock->framesAvailable() > 0 && ((inSock && inPendingBytes < PENDING_MAX) || detached))
 		{
 			WebSocket::Frame f = outSock->readFrame();
 
@@ -722,7 +718,7 @@ public:
 		if(!inSock && !outSock)
 		{
 			cleanup();
-			emit q->finishedByPassthrough();
+			finishedByPassthroughCallback.call({q});
 		}
 	}
 
@@ -1024,7 +1020,7 @@ private slots:
 	{
 		WebSocketOverHttp *woh = (WebSocketOverHttp *)sender();
 
-		ProxyUtil::manipulateRequestHeaders("wsproxysession", q, &requestData, trustedClient, route, sigIss, sigKey, acceptXForwardedProtocol, useXForwardedProto, useXForwardedProtocol, xffTrustedRule, xffRule, origHeadersNeedMark, acceptPushpinRoute, clientAddress, InspectData(), route.grip, false);
+		ProxyUtil::applyGripSig("wsproxysession", q, &requestData.headers, sigIss, sigKey);
 
 		woh->setHeaders(requestData.headers);
 	}
@@ -1045,7 +1041,7 @@ private slots:
 		}
 
 		// if queue == false, drop if we can't send right now
-		if(!queue && (!inSock->canWrite() || outReadInProgress != -1))
+		if(!queue && (inPendingBytes >= PENDING_MAX || outReadInProgress != -1))
 		{
 			// if drop is allowed, drop is success :)
 			wsControl->sendEventWritten();
@@ -1076,8 +1072,8 @@ private slots:
 
 			if(!keepAliveTimer)
 			{
-				keepAliveTimer = new QTimer(this);
-				connect(keepAliveTimer, &QTimer::timeout, this, &Private::keepAliveTimer_timeout);
+				keepAliveTimer = new RTimer(this);
+				connect(keepAliveTimer, &RTimer::timeout, this, &Private::keepAliveTimer_timeout);
 				keepAliveTimer->setSingleShot(true);
 			}
 
@@ -1217,9 +1213,19 @@ void WsProxySession::setAcceptPushpinRoute(bool enabled)
 	d->acceptPushpinRoute = enabled;
 }
 
+void WsProxySession::setCdnLoop(const QByteArray &value)
+{
+	d->cdnLoop = value;
+}
+
 void WsProxySession::start(WebSocket *sock, const QByteArray &publicCid, const DomainMap::Entry &route)
 {
 	d->start(sock, publicCid, route);
+}
+
+Callback<std::tuple<WsProxySession *>> & WsProxySession::finishedByPassthroughCallback()
+{
+	return d->finishedByPassthroughCallback;
 }
 
 #include "wsproxysession.moc"

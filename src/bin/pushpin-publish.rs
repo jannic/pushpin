@@ -1,32 +1,26 @@
 /*
- * Copyright (C) 2021 Fanout, Inc.
+ * Copyright (C) 2021-2023 Fanout, Inc.
  *
  * This file is part of Pushpin.
  *
- * $FANOUT_BEGIN_LICENSE:AGPL$
+ * $FANOUT_BEGIN_LICENSE:APACHE2$
  *
- * Pushpin is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Affero General Public License as published by the Free
- * Software Foundation, either version 3 of the License, or (at your option)
- * any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * Pushpin is distributed in the hope that it will be useful, but WITHOUT ANY
- * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
- * FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
- * more details.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * Alternatively, Pushpin may be used under the terms of a commercial license,
- * where the commercial license agreement is provided with the software or
- * contained in a written agreement between you and Fanout. For further
- * information use the contact form at <https://fanout.io/enterprise/>.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * $FANOUT_END_LICENSE$
  */
 
-use clap::{App, Arg};
+use clap::{Arg, ArgAction, Command};
 use pushpin::publish_cli::{run, Action, Config, Content, Message};
 use std::env;
 use std::error::Error;
@@ -138,123 +132,132 @@ fn main() {
         Err(_) => DEFAULT_SPEC.to_string(),
     };
 
-    let matches = App::new(PROGRAM_NAME)
+    let matches = Command::new(PROGRAM_NAME)
         .version(env!("APP_VERSION"))
         .about("Publish messages to Pushpin")
         .arg(
-            Arg::with_name("channel")
+            Arg::new("channel")
                 .required(true)
-                .takes_value(true)
+                .num_args(1)
                 .value_name("channel")
                 .help("Channel to send to"),
         )
         .arg(
-            Arg::with_name("content")
-                .takes_value(true)
+            Arg::new("content")
+                .num_args(1)
                 .value_name("content")
                 .help("Content to use for HTTP body and WebSocket message"),
         )
         .arg(
-            Arg::with_name("id")
+            Arg::new("id")
                 .long("id")
-                .takes_value(true)
+                .num_args(1)
                 .value_name("id")
                 .help("Payload ID"),
         )
         .arg(
-            Arg::with_name("prev-id")
+            Arg::new("prev-id")
                 .long("prev-id")
-                .takes_value(true)
+                .num_args(1)
                 .value_name("id")
                 .help("Previous payload ID"),
         )
         .arg(
-            Arg::with_name("sender")
+            Arg::new("sender")
                 .long("sender")
-                .takes_value(true)
+                .num_args(1)
                 .value_name("sender")
                 .help("Sender meta value"),
         )
         .arg(
-            Arg::with_name("code")
+            Arg::new("code")
                 .long("code")
-                .takes_value(true)
+                .num_args(1)
                 .value_name("code")
                 .help("HTTP response code to use")
                 .default_value("200"),
         )
         .arg(
-            Arg::with_name("header")
-                .short("H")
+            Arg::new("header")
+                .short('H')
                 .long("header")
-                .takes_value(true)
+                .num_args(1)
                 .value_name("\"K: V\"")
-                .multiple(true)
+                .action(ArgAction::Append)
                 .help("Add HTTP response header"),
         )
         .arg(
-            Arg::with_name("meta")
-                .short("M")
+            Arg::new("meta")
+                .short('M')
                 .long("meta")
-                .takes_value(true)
+                .num_args(1)
                 .value_name("\"K=V\"")
-                .multiple(true)
+                .action(ArgAction::Append)
                 .help("Add meta variable"),
         )
         .arg(
-            Arg::with_name("hint")
+            Arg::new("hint")
                 .long("hint")
+                .action(ArgAction::SetTrue)
                 .help("Send hint instead of content"),
         )
         .arg(
-            Arg::with_name("close")
+            Arg::new("close")
                 .long("close")
+                .action(ArgAction::SetTrue)
                 .help("Close streaming and WebSocket connections"),
         )
         .arg(
-            Arg::with_name("patch")
+            Arg::new("patch")
                 .long("patch")
+                .action(ArgAction::SetTrue)
                 .help("Content is JSON patch"),
         )
         .arg(
-            Arg::with_name("no-seq")
+            Arg::new("no-seq")
                 .long("no-seq")
+                .action(ArgAction::SetTrue)
                 .help("Bypass sequencing buffer"),
         )
         .arg(
-            Arg::with_name("no-eol")
+            Arg::new("no-eol")
                 .long("no-eol")
+                .action(ArgAction::SetTrue)
                 .help("Don't add newline to HTTP payloads"),
         )
         .arg(
-            Arg::with_name("spec")
+            Arg::new("spec")
                 .long("spec")
-                .takes_value(true)
+                .num_args(1)
                 .value_name("spec")
                 .help("GRIP URL or ZeroMQ PUSH spec")
-                .default_value(&default_spec),
+                .default_value(default_spec),
         )
         .arg(
-            Arg::with_name("user")
-                .short("u")
+            Arg::new("user")
+                .short('u')
                 .long("user")
-                .takes_value(true)
+                .num_args(1)
                 .value_name("user:pass")
                 .help("Authenticate using basic auth"),
         )
         .get_matches();
 
-    let channel = matches.value_of("channel").unwrap();
+    let channel = matches.get_one::<String>("channel").unwrap().clone();
 
-    let content = matches
-        .value_of("content")
-        .map_or(None, |s| Some(String::from(s)));
+    let content = matches.get_one::<String>("content").cloned();
 
-    let id = matches.value_of("id").unwrap_or("");
-    let prev_id = matches.value_of("prev-id").unwrap_or("");
-    let sender = matches.value_of("sender").unwrap_or("");
+    let id = matches.get_one::<String>("id").cloned().unwrap_or_default();
+    let prev_id = matches
+        .get_one::<String>("prev-id")
+        .cloned()
+        .unwrap_or_default();
+    let sender = matches
+        .get_one::<String>("sender")
+        .cloned()
+        .unwrap_or_default();
 
-    let code = matches.value_of("code").unwrap();
+    let code = matches.get_one::<String>("code").unwrap();
 
     let code: u16 = match code.parse() {
         Ok(x) => x,
@@ -264,44 +267,34 @@ fn main() {
         }
     };
 
-    let headers = if matches.is_present("header") {
-        matches
-            .values_of("header")
-            .unwrap()
-            .map(String::from)
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let headers = matches
+        .get_many::<String>("header")
+        .unwrap_or_default()
+        .map(|v| v.to_owned())
+        .collect();
 
-    let meta = if matches.is_present("meta") {
-        matches
-            .values_of("meta")
-            .unwrap()
-            .map(String::from)
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let meta = matches
+        .get_many::<String>("meta")
+        .unwrap_or_default()
+        .map(|v| v.to_owned())
+        .collect();
 
-    let hint = matches.is_present("hint");
-    let close = matches.is_present("close");
-    let patch = matches.is_present("patch");
-    let no_seq = matches.is_present("no-seq");
-    let no_eol = matches.is_present("no-eol");
+    let hint = *matches.get_one("hint").unwrap();
+    let close = *matches.get_one("close").unwrap();
+    let patch = *matches.get_one("patch").unwrap();
+    let no_seq = *matches.get_one("no-seq").unwrap();
+    let no_eol = *matches.get_one("no-eol").unwrap();
 
-    let spec = matches.value_of("spec").unwrap();
+    let spec = matches.get_one::<String>("spec").unwrap().clone();
 
-    let user = matches
-        .value_of("user")
-        .map_or(None, |s| Some(String::from(s)));
+    let user = matches.get_one::<String>("user").cloned();
 
     let args = Args {
-        channel: channel.to_string(),
+        channel,
         content,
-        id: id.to_string(),
-        prev_id: prev_id.to_string(),
-        sender: sender.to_string(),
+        id,
+        prev_id,
+        sender,
         code,
         headers,
         meta,
@@ -310,7 +303,7 @@ fn main() {
         patch,
         no_seq,
         no_eol,
-        spec: spec.to_string(),
+        spec,
         user,
     };
 

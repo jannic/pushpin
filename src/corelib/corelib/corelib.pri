@@ -1,3 +1,7 @@
+QMAKE_CXXFLAGS += $$(CXXFLAGS)
+QMAKE_CFLAGS += $$(CFLAGS)
+QMAKE_LFLAGS += $$(LDFLAGS)
+
 SRC_DIR = $$PWD/..
 QZMQ_DIR = $$SRC_DIR/qzmq
 COMMON_DIR = $$SRC_DIR/common
@@ -48,6 +52,7 @@ SOURCES += \
 	$$SRC_DIR/packet/zrpcresponsepacket.cpp
 
 HEADERS += \
+	$$SRC_DIR/callback.h \
 	$$SRC_DIR/timerwheel.h \
 	$$SRC_DIR/jwt.h \
 	$$SRC_DIR/rtimer.h \

@@ -3,25 +3,19 @@
  *
  * This file is part of Pushpin.
  *
- * $FANOUT_BEGIN_LICENSE:AGPL$
+ * $FANOUT_BEGIN_LICENSE:APACHE2$
  *
- * Pushpin is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Affero General Public License as published by the Free
- * Software Foundation, either version 3 of the License, or (at your option)
- * any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * Pushpin is distributed in the hope that it will be useful, but WITHOUT ANY
- * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
- * FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
- * more details.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * Alternatively, Pushpin may be used under the terms of a commercial license,
- * where the commercial license agreement is provided with the software or
- * contained in a written agreement between you and Fanout. For further
- * information use the contact form at <https://fanout.io/enterprise/>.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * $FANOUT_END_LICENSE$
  */
@@ -42,12 +36,13 @@ pub struct ExpiredTimer {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn timer_wheel_create(capacity: libc::c_uint) -> *mut TimerWheel {
+pub extern "C" fn timer_wheel_create(capacity: libc::c_uint) -> *mut TimerWheel {
     let wheel = TimerWheel::new(capacity as usize);
 
     Box::into_raw(Box::new(wheel))
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn timer_wheel_destroy(wheel: *mut TimerWheel) {
     if !wheel.is_null() {
@@ -55,6 +50,7 @@ pub unsafe extern "C" fn timer_wheel_destroy(wheel: *mut TimerWheel) {
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn timer_add(
     wheel: *mut TimerWheel,
@@ -67,11 +63,13 @@ pub unsafe extern "C" fn timer_add(
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn timer_remove(wheel: *mut TimerWheel, key: libc::c_int) {
     TimerWheel::remove(&mut *wheel, key as usize);
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn timer_wheel_timeout(wheel: *mut TimerWheel) -> i64 {
     match TimerWheel::timeout(&*wheel) {
@@ -80,11 +78,13 @@ pub unsafe extern "C" fn timer_wheel_timeout(wheel: *mut TimerWheel) -> i64 {
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn timer_wheel_update(wheel: *mut TimerWheel, curtime: u64) {
     TimerWheel::update(&mut *wheel, curtime);
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn timer_wheel_take_expired(wheel: *mut TimerWheel) -> ExpiredTimer {
     match TimerWheel::take_expired(&mut *wheel) {
@@ -169,6 +169,7 @@ fn load_decoding_key_pem(
     Err(last_err.unwrap())
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn jwt_encoding_key_from_secret(
     data: *const u8,
@@ -182,6 +183,7 @@ pub unsafe extern "C" fn jwt_encoding_key_from_secret(
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn jwt_encoding_key_from_pem(
     data: *const u8,
@@ -199,6 +201,7 @@ pub unsafe extern "C" fn jwt_encoding_key_from_pem(
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn jwt_encoding_key_destroy(key: *mut jsonwebtoken::EncodingKey) {
     if !key.is_null() {
@@ -206,6 +209,7 @@ pub unsafe extern "C" fn jwt_encoding_key_destroy(key: *mut jsonwebtoken::Encodi
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn jwt_decoding_key_from_secret(
     data: *const u8,
@@ -219,6 +223,7 @@ pub unsafe extern "C" fn jwt_decoding_key_from_secret(
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn jwt_decoding_key_from_pem(
     data: *const u8,
@@ -236,6 +241,7 @@ pub unsafe extern "C" fn jwt_decoding_key_from_pem(
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn jwt_decoding_key_destroy(key: *mut jsonwebtoken::DecodingKey) {
     if !key.is_null() {
@@ -243,6 +249,7 @@ pub unsafe extern "C" fn jwt_decoding_key_destroy(key: *mut jsonwebtoken::Decodi
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn jwt_str_destroy(s: *mut c_char) {
     if !s.is_null() {
@@ -250,6 +257,7 @@ pub unsafe extern "C" fn jwt_str_destroy(s: *mut c_char) {
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn jwt_encode(
     alg: libc::c_int,
@@ -278,7 +286,7 @@ pub unsafe extern "C" fn jwt_encode(
         Err(_) => return 1, // claim is a JSON string which will be valid UTF-8
     };
 
-    let token = match jwt::encode(&header, &claim, key) {
+    let token = match jwt::encode(&header, claim, key) {
         Ok(token) => token,
         Err(_) => return 1, // failed to sign
     };
@@ -293,6 +301,7 @@ pub unsafe extern "C" fn jwt_encode(
     0
 }
 
+#[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn jwt_decode(
     alg: libc::c_int,
@@ -324,7 +333,7 @@ pub unsafe extern "C" fn jwt_decode(
         Err(_) => return 1, // token string will be valid UTF-8
     };
 
-    let claim = match jwt::decode(&token, key, &validation) {
+    let claim = match jwt::decode(token, key, &validation) {
         Ok(claim) => claim,
         Err(_) => return 1, // failed to validate
     };

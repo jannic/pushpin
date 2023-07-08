@@ -1,27 +1,22 @@
 /*
- * Copyright (C) 2012-2022 Fanout, Inc.
+ * Copyright (C) 2012-2023 Fanout, Inc.
+ * Copyright (C) 2023 Fastly, Inc.
  *
  * This file is part of Pushpin.
  *
- * $FANOUT_BEGIN_LICENSE:AGPL$
+ * $FANOUT_BEGIN_LICENSE:APACHE2$
  *
- * Pushpin is free software: you can redistribute it and/or modify it under
- * the terms of the GNU Affero General Public License as published by the Free
- * Software Foundation, either version 3 of the License, or (at your option)
- * any later version.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * Pushpin is distributed in the hope that it will be useful, but WITHOUT ANY
- * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
- * FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
- * more details.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
- *
- * Alternatively, Pushpin may be used under the terms of a commercial license,
- * where the commercial license agreement is provided with the software or
- * contained in a written agreement between you and Fanout. For further
- * information use the contact form at <https://fanout.io/enterprise/>.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  * $FANOUT_END_LICENSE$
  */
@@ -35,6 +30,7 @@
 #include "packet/httpresponsedata.h"
 #include "packet/retryrequestpacket.h"
 #include "packet/statspacket.h"
+#include "packet/zrpcrequestpacket.h"
 #include "rtimer.h"
 #include "log.h"
 #include "inspectdata.h"
@@ -304,9 +300,14 @@ public:
 		{
 			stats = new StatsManager(config.connectionsMax, 0, this);
 
+			connect(stats, &StatsManager::connMax, this, &Private::stats_connMax);
+
 			stats->setInstanceId(config.clientId);
 			stats->setIpcFileMode(config.ipcFileMode);
+			stats->setConnectionSendEnabled(config.statsConnectionSend);
+			stats->setConnectionsMaxSendEnabled(!config.statsConnectionSend);
 			stats->setConnectionTtl(config.statsConnectionTtl);
+			stats->setConnectionsMaxTtl(config.statsConnectionsMaxTtl);
 			stats->setReportInterval(config.statsReportInterval);
 
 			if(!config.statsSpec.isEmpty())
@@ -383,7 +384,8 @@ public:
 		{
 			log_debug("creating proxysession for id=%s", rs->rid().second.data());
 
-			ps = new ProxySession(zroutes, accept, logConfig, stats, this);
+			ps = new ProxySession(zroutes, accept, logConfig, stats);
+			// TODO: use callbacks for performance
 			connect(ps, &ProxySession::addNotAllowed, this, &Private::ps_addNotAllowed);
 			connect(ps, &ProxySession::finished, this, &Private::ps_finished);
 			connect(ps, &ProxySession::requestSessionDestroyed, this, &Private::ps_requestSessionDestroyed);
@@ -395,6 +397,7 @@ public:
 			ps->setXffRules(config.xffUntrustedRule, config.xffTrustedRule);
 			ps->setOrigHeadersNeedMark(config.origHeadersNeedMark);
 			ps->setAcceptPushpinRoute(config.acceptPushpinRoute);
+			ps->setCdnLoop(config.cdnLoop);
 			ps->setProxyInitialResponseEnabled(true);
 
 			if(idata)
@@ -415,6 +418,7 @@ public:
 			log_debug("reusing proxysession");
 
 		// proxysession will take it from here
+		// TODO: use callbacks for performance
 		rs->disconnect(this);
 
 		ps->add(rs);
@@ -424,8 +428,8 @@ public:
 	{
 		QByteArray cid = connectionManager.addConnection(sock);
 
-		WsProxySession *ps = new WsProxySession(zroutes, &connectionManager, logConfig, stats, wsControl, this);
-		connect(ps, &WsProxySession::finishedByPassthrough, this, &Private::wsps_finishedByPassthrough);
+		WsProxySession *ps = new WsProxySession(zroutes, &connectionManager, logConfig, stats, wsControl);
+		ps->finishedByPassthroughCallback().add(Private::wsps_finishedByPassthrough_cb, this);
 
 		connectionManager.setProxyForConnection(sock, ps);
 
@@ -437,6 +441,7 @@ public:
 		ps->setXffRules(config.xffUntrustedRule, config.xffTrustedRule);
 		ps->setOrigHeadersNeedMark(config.origHeadersNeedMark);
 		ps->setAcceptPushpinRoute(config.acceptPushpinRoute);
+		ps->setCdnLoop(config.cdnLoop);
 
 		WsProxyItem *i = new WsProxyItem;
 		i->ps = ps;
@@ -555,7 +560,7 @@ public:
 
 			route.targets += target;
 
-			rs = new RequestSession(stats, this);
+			rs = new RequestSession(stats);
 			rs->setRoute(route);
 		}
 		else
@@ -564,7 +569,7 @@ public:
 			// request with preferInternal=true. in that case, use domainmap
 			// for lookup, with route ID if available
 
-			rs = new RequestSession(domainMap, sockJsManager, inspect, inspectChecker, accept, stats, this);
+			rs = new RequestSession(domainMap, sockJsManager, inspect, inspectChecker, accept, stats);
 			rs->setDebugEnabled(config.debug);
 			rs->setAutoCrossOrigin(config.autoCrossOrigin);
 			rs->setPrefetchSize(config.inspectPrefetch);
@@ -575,6 +580,7 @@ public:
 
 		rs->setAutoShare(autoShare);
 
+		// TODO: use callbacks for performance
 		connect(rs, &RequestSession::inspected, this, &Private::rs_inspected);
 		connect(rs, &RequestSession::inspectError, this, &Private::rs_inspectError);
 		connect(rs, &RequestSession::finished, this, &Private::rs_finished);
@@ -790,10 +796,17 @@ private slots:
 		tryTakeNext();
 	}
 
-	void wsps_finishedByPassthrough()
+	static void wsps_finishedByPassthrough_cb(void *data, std::tuple<WsProxySession *> value)
 	{
-		WsProxySession *ps = (WsProxySession *)sender();
+		Q_UNUSED(value);
 
+		Private *self = (Private *)data;
+
+		self->wsps_finishedByPassthrough(std::get<0>(value));
+	}
+
+	void wsps_finishedByPassthrough(WsProxySession *ps)
+	{
 		WsProxyItem *i = wsProxyItemsBySession.value(ps);
 		assert(i);
 
@@ -802,7 +815,9 @@ private slots:
 
 		wsProxyItemsBySession.remove(i->ps);
 		delete i;
-		delete ps;
+
+		ps->finishedByPassthroughCallback().remove(this);
+		ps->deleteLater();
 
 		tryTakeNext();
 	}
@@ -835,6 +850,9 @@ private slots:
 
 		log_debug("IN (retry) %s %s", qPrintable(p.requestData.method), p.requestData.uri.toEncoded().data());
 
+		if(p.retrySeq >= 0)
+			stats->setRetrySeq(p.route, p.retrySeq);
+
 		InspectData idata;
 		if(p.haveInspectInfo)
 		{
@@ -863,7 +881,7 @@ private slots:
 
 			ZhttpRequest *zhttpRequest = zhttpIn->createRequestFromState(ss);
 
-			RequestSession *rs = new RequestSession(domainMap, sockJsManager, inspect, inspectChecker, accept, stats, this);
+			RequestSession *rs = new RequestSession(domainMap, sockJsManager, inspect, inspectChecker, accept, stats);
 
 			requestSessions += rs;
 
@@ -876,7 +894,7 @@ private slots:
 			// note: if the routing table was changed, there's a chance the request
 			//   might get a different route id this time around. this could confuse
 			//   stats processors tracking route+connection mappings.
-			rs->startRetry(zhttpRequest, req.debug, req.autoCrossOrigin, req.jsonpCallback, req.jsonpExtendedResponse);
+			rs->startRetry(zhttpRequest, req.debug, req.autoCrossOrigin, req.jsonpCallback, req.jsonpExtendedResponse, req.unreportedTime);
 
 			doProxy(rs, p.haveInspectInfo ? &idata : 0);
 		}
@@ -985,14 +1003,20 @@ private slots:
 				return;
 			}
 
+			int connectionsMax = qMax(p.connectionsMax, 0);
+			int connectionsMinutes = qMax(p.connectionsMinutes, 0);
+			int messagesReceived = qMax(p.messagesReceived, 0);
+			int messagesSent = qMax(p.messagesSent, 0);
+			int httpResponseMessagesSent = qMax(p.httpResponseMessagesSent, 0);
+
 			Updater::Report report;
-			report.connectionsMax = p.connectionsMax;
-			report.connectionsMinutes = p.connectionsMinutes;
-			report.messagesReceived = p.messagesReceived;
-			report.messagesSent = p.messagesSent;
+			report.connectionsMax = connectionsMax;
+			report.connectionsMinutes = connectionsMinutes;
+			report.messagesReceived = messagesReceived;
+			report.messagesSent = messagesSent;
 
 			// fanout cloud style ops calculation
-			report.ops = p.connectionsMinutes + p.messagesReceived + p.messagesSent - p.httpResponseMessagesSent;
+			report.ops = connectionsMinutes + messagesReceived + messagesSent - httpResponseMessagesSent;
 
 			updater->setReport(report);
 
@@ -1010,6 +1034,18 @@ private slots:
 	{
 		// connect to new zhttp targets, disconnect from old
 		zroutes->setup(domainMap->zhttpRoutes());
+	}
+
+	void stats_connMax(const StatsPacket &packet)
+	{
+		if(accept->canWriteImmediately())
+		{
+			ZrpcRequestPacket p;
+			p.method = "conn-max";
+			p.args["conn-max"] = QVariantList() << packet.toVariant();
+
+			accept->write(p);
+		}
 	}
 };
 
