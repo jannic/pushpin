@@ -2564,7 +2564,6 @@ pub mod tests {
     use crate::connection::calculate_ws_accept;
     use crate::websocket;
     use std::io::Read;
-    use test_log::test;
 
     fn recv_frame<R: Read>(
         stream: &mut R,

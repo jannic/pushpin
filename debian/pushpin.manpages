@@ -3,3 +3,4 @@ debian/pushpin-handler.1
 debian/pushpin-proxy.1
 debian/pushpin.1
 debian/pushpin-publish.1
+debian/pushpin-condure.1

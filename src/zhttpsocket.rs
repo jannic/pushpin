@@ -2653,7 +2653,6 @@ mod tests {
     use crate::zhttppacket::{
         PacketParse, Request, RequestData, RequestPacket, Response, ResponsePacket,
     };
-    use test_log::test;
 
     fn wait_readable(poller: &mut event::Poller, token: mio::Token) {
         loop {

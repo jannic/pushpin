@@ -61,6 +61,7 @@ use crate::zhttppacket;
 use crate::zmq::MultipartHeader;
 use crate::{pin, Defer};
 use arrayvec::{ArrayString, ArrayVec};
+use base64::prelude::{Engine as _, BASE64_STANDARD};
 use ipnet::IpNet;
 use log::{debug, log, warn, Level};
 use sha1::{Digest, Sha1};
@@ -127,7 +128,7 @@ fn gen_ws_key() -> ArrayString<WS_KEY_MAX> {
 
     let mut output = [0; WS_KEY_MAX];
 
-    let size = base64::encode_config_slice(nonce, base64::STANDARD, &mut output);
+    let size = BASE64_STANDARD.encode_slice(nonce, &mut output).unwrap();
 
     let output = str::from_utf8(&output[..size]).unwrap();
 
@@ -155,7 +156,7 @@ pub fn calculate_ws_accept(key: &[u8]) -> Result<ArrayString<WS_ACCEPT_MAX>, ()>
 
     let mut output = [0; WS_ACCEPT_MAX];
 
-    let size = base64::encode_config_slice(digest, base64::STANDARD, &mut output);
+    let size = BASE64_STANDARD.encode_slice(digest, &mut output).unwrap();
 
     let output = match str::from_utf8(&output[..size]) {
         Ok(s) => s,
@@ -7713,7 +7714,6 @@ mod tests {
     use std::sync::Arc;
     use std::task::Poll;
     use std::time::Instant;
-    use test_log::test;
 
     #[test]
     fn ws_ext_header() {

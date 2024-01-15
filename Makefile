@@ -25,7 +25,7 @@ postbuild-clean: FORCE
 	cd postbuild && $(MAKE) -f Makefile clean
 
 postbuild-distclean: FORCE
-	cd postbuild && $(MAKE) -f Makefile distclean
+	cd postbuild && [ ! -f Makefile ] || $(MAKE) -f Makefile distclean
 
 check: cargo-test
 

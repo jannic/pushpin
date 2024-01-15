@@ -29,7 +29,7 @@ use std::io;
 use std::io::{BufRead, Read, Write};
 use std::net;
 use std::str;
-//use std::sync::Arc;
+use std::sync::Arc;
 
 enum TnValue {
     Null,
@@ -229,8 +229,6 @@ fn parse_url(url: &str) -> Result<ParsedUrl, io::Error> {
         connect_port,
     })
 }
-
-trait DummyStream: Read + Write {}
 
 struct TlsStream {
     stream: rustls::StreamOwned<rustls::ClientConnection, net::TcpStream>,

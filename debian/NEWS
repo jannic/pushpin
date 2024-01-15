@@ -1,3 +1,11 @@
+pushpin (1.38.0-1) unstable; urgency=medium
+
+  With version 1.38.0, upstream bundles condure with pushpin, named
+  pushpin-condure. Therefore, an external condure or mongrel2 binary
+  is no longer used.
+
+ -- Jan Niehusmann <jan@debian.org>  Wed, 07 Feb 2024 22:45:01 +0100
+
 pushpin (1.31.0-1) unstable; urgency=medium
 
   With version 1.31.0, upstream defaults to using condure instead of

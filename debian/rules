@@ -25,29 +25,32 @@ include /usr/share/dpkg/buildflags.mk
 include /usr/share/rustc/architecture.mk
 export CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
 export DEB_HOST_RUST_TYPE DEB_HOST_GNU_TYPE
+export PREFIX=/usr
+export CONFIGDIR=/etc
 
 %:
 	dh $@
 
 override_dh_auto_configure:
-	./configure --prefix=/usr --qtselect=5 --configdir=/etc --extraconf="$$QMAKE_BUILDFLAGS" --verbose
-	echo "CONFIG += debug" >>conf.pri
 	# Upstream Cargo.lock contains versions not valid for debian
 	rm Cargo.lock
-	# Upstream config.toml references vendored dependencies not part of the debian package
-	-rm .cargo/config.toml
 	cargo update
 
 override_dh_auto_install:
 	dh_auto_install -- INSTALL_ROOT="$(CURDIR)/debian/pushpin"
 	mkdir -p debian/pushpin/var/log/pushpin
 	mkdir -p debian/pushpin/usr/share/pushpin
-	mv debian/pushpin/etc/pushpin/pushpin.conf debian/pushpin/usr/share/pushpin/pushpin.conf.condure
-	cp debian/pushpin.conf.md5sum debian/pushpin/usr/share/pushpin/pushpin.conf.mongrel2.md5sum
-	sed 's/services=condure/services=mongrel2,m2adapter/' <debian/pushpin/usr/share/pushpin/pushpin.conf.condure >debian/pushpin/usr/share/pushpin/pushpin.conf.mongrel2
+	mv debian/pushpin/etc/pushpin/pushpin.conf debian/pushpin/usr/share/pushpin/pushpin.conf
 
 override_dh_installexamples:
 	dh_installexamples -X.o -XMakefile
 
 get-orig-source:
 	uscan --verbose --force-download --rename
+
+override_dh_installman:
+	help2man \
+		--name "HTTP/WebSocket connection manager" \
+		--no-info \
+		debian/pushpin/usr/bin/pushpin-condure > debian/pushpin-condure.1
+	dh_installman -O--buildsystem=cargo

@@ -2929,7 +2929,6 @@ pub mod tests {
     use super::*;
     use crate::websocket;
     use std::io::Read;
-    use test_log::test;
 
     fn recv_frame<R: Read>(
         stream: &mut R,
