@@ -22,6 +22,7 @@
 
 use crate::tnetstring;
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::error::Error;
 use std::fs;
 use std::io;
@@ -232,35 +233,29 @@ fn parse_url(url: &str) -> Result<ParsedUrl, io::Error> {
 trait DummyStream: Read + Write {}
 
 struct TlsStream {
-    //stream: rustls::StreamOwned<rustls::ClientSession, net::TcpStream>,
-    stream: Box<dyn DummyStream>,
+    stream: rustls::StreamOwned<rustls::ClientConnection, net::TcpStream>,
 }
 
 impl TlsStream {
-    /*
     fn new(stream: net::TcpStream, host: &str) -> Result<Self, Box<dyn Error>> {
-        let mut config = rustls::ClientConfig::new();
+        let mut root_store = rustls::RootCertStore::empty();
 
-        config.root_store = match rustls_native_certs::load_native_certs() {
-            Ok(store) => store,
-            Err((Some(store), _)) => store,
-            Err((_, e)) => return Err(e.into()),
-        };
+        for cert in rustls_native_certs::load_native_certs()? {
+            root_store.add(&rustls::Certificate(cert.0)).unwrap();
+        }
 
-        let config = Arc::new(config);
+        let config = rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
 
-        let dns_name = webpki::DNSNameRef::try_from_ascii_str(host)?;
+        let server_name = host.try_into()?;
 
-        let client = rustls::ClientSession::new(&config, dns_name);
+        let client = rustls::ClientConnection::new(Arc::new(config), server_name)?;
 
         Ok(Self {
             stream: rustls::StreamOwned::new(client, stream),
         })
-    }
-    */
-
-    fn new(_stream: net::TcpStream, _host: &str) -> Result<Self, Box<dyn Error>> {
-        Err("TLS is not yet supported in the debian version of pushpin-publish".into())
     }
 }
 
