@@ -4,8 +4,8 @@ jobs:
   test:
     strategy:
       matrix:
-        rust-toolchain: [stable]
-        platform: [ubuntu-latest]
+        rust-toolchain: [1.66.1]
+        platform: [ubuntu-20.04]
     runs-on: ${{ matrix.platform }}
     steps:
     - name: Checkout code
@@ -13,7 +13,7 @@ jobs:
       with:
         submodules: recursive
     - name: Install Rust
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@master
       with:
         toolchain: ${{ matrix.rust-toolchain }}
     - name: Cache cargo registry
@@ -41,18 +41,18 @@ jobs:
       run: cargo install cargo-audit
       shell: bash
     - name: Install deps
-      run: sudo apt-get update && sudo apt-get install -y make g++ libssl-dev qtbase5-dev libzmq3-dev
+      run: sudo apt-get update && sudo apt-get install -y make g++ libssl-dev libzmq3-dev qtbase5-dev libboost-dev
     - name: fmt
       run: cargo fmt --check
       shell: bash
     - name: build
-      run: ./configure && cargo build && make
+      run: cargo fetch && make
       shell: bash
-    - name: test
-      run: cargo test
+    - name: check
+      run: RUSTFLAGS="-D warnings" make check
       shell: bash
     - name: clippy
-      run: cargo clippy
+      run: cargo clippy -- -D warnings
       shell: bash
     - name: audit
       run: cargo audit
