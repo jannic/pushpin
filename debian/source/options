@@ -1,0 +1,3 @@
+# ignore changes on Cargo.lock
+extend-diff-ignore = "^Cargo\.lock$"
+
